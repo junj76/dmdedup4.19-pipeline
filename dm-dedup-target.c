@@ -31,6 +31,7 @@
 #include <linux/kthread.h>
 #include <linux/sched.h>
 #include <linux/mutex.h>
+#include <unistd.h>
 
 #define HASH_LBN 0
 #define HASH_NOLBN 1
@@ -1649,21 +1650,25 @@ static void process_data(struct dedup_config *dc, struct process_queue_bio proce
                                     process_queue_bio.hash2pbn_value.pbn,
 						            process_queue_bio.lbn2pbn_value);
         dc->dupwrites++;
+	break;
     case HASH_NOLBN:
         __handle_no_lbn_pbn_with_hash(dc, process_queue_bio.bio,
                                     bio_lbn(dc, process_queue_bio.bio), 
                                     process_queue_bio.hash2pbn_value.pbn,
 						            process_queue_bio.lbn2pbn_value);
+	break;
     case NOHASH_LBN:
 		__handle_has_lbn_pbn(dc, process_queue_bio.bio,
                             bio_lbn(dc, process_queue_bio.bio), 
                             process_queue_bio.hash, 
                             process_queue_bio.lbn2pbn_value.pbn);
         dc->dupwrites++;
+	break;
     case NOHASH_NOLBN:
         __handle_no_lbn_pbn(dc, process_queue_bio.bio,
                             bio_lbn(dc, process_queue_bio.bio), 
                             process_queue_bio.hash);
+	break;
     }
     kfree(process_queue_bio.hash);
 }
@@ -1778,6 +1783,7 @@ static int thread_hash_func(void *data)
 static int hash_func(struct dedup_config *dc)
 {
     while (!kthread_should_stop()) {
+	sleep(1);
         struct hash_queue_bio *hash_queue_bio = get_next_bio_from_hash_queue(dc);
 
         if (hash_queue_bio) {
@@ -1802,6 +1808,7 @@ static int thread_lookup_func(void *data)
 static int lookup_func(struct dedup_config *dc)
 {
     while (!kthread_should_stop()) {
+	sleep(1);
         struct lookup_queue_bio *lookup_queue_bio = get_next_bio_from_lookup_queue(dc);
         if (lookup_queue_bio) {
             // 查表的处理逻辑
@@ -1828,6 +1835,7 @@ static int thread_process_func(void *data)
 static int process_func(struct dedup_config *dc)
 {
     while (!kthread_should_stop()) {
+	sleep(1);
         // struct bio *bio = get_next_bio(&process_queue);
         struct process_queue_bio *process_queue_bio = get_next_bio_from_process_queue(dc);
 
