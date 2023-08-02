@@ -31,7 +31,6 @@
 #include <linux/kthread.h>
 #include <linux/sched.h>
 #include <linux/mutex.h>
-#include <unistd.h>
 
 #define HASH_LBN 0
 #define HASH_NOLBN 1
@@ -1783,7 +1782,6 @@ static int thread_hash_func(void *data)
 static int hash_func(struct dedup_config *dc)
 {
     while (!kthread_should_stop()) {
-	sleep(1);
         struct hash_queue_bio *hash_queue_bio = get_next_bio_from_hash_queue(dc);
 
         if (hash_queue_bio) {
@@ -1794,6 +1792,9 @@ static int hash_func(struct dedup_config *dc)
             // 将bio传递给下一个阶段
             add_to_lookup_queue(hash_queue_bio->bio, dc, hash);
         }
+	else {
+	    cond_resched();
+	}
     }
 
     return 0;
@@ -1808,7 +1809,6 @@ static int thread_lookup_func(void *data)
 static int lookup_func(struct dedup_config *dc)
 {
     while (!kthread_should_stop()) {
-	sleep(1);
         struct lookup_queue_bio *lookup_queue_bio = get_next_bio_from_lookup_queue(dc);
         if (lookup_queue_bio) {
             // 查表的处理逻辑
@@ -1821,6 +1821,9 @@ static int lookup_func(struct dedup_config *dc)
             // 将bio传递给下一个阶段
             add_to_process_queue(lookup_queue_bio->bio, dc, result, hash2pbn_value, lbn2pbn_value);
         }
+	else {
+	    cond_resched();
+	}
     }
 
     return 0;
@@ -1835,7 +1838,6 @@ static int thread_process_func(void *data)
 static int process_func(struct dedup_config *dc)
 {
     while (!kthread_should_stop()) {
-	sleep(1);
         // struct bio *bio = get_next_bio(&process_queue);
         struct process_queue_bio *process_queue_bio = get_next_bio_from_process_queue(dc);
 
@@ -1854,6 +1856,9 @@ static int process_func(struct dedup_config *dc)
 			dc->writes_after_flush = 0;
 			}
         }
+	else {
+	    cond_resched();
+	}
     }
 
     return 0;
