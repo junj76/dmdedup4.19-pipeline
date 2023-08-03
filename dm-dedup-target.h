@@ -55,7 +55,7 @@
 
 #define MIN_DEDUP_WORK_IO	16
 
-#define MAX_QUEUE_SIZE   10000
+#define MAX_QUEUE_SIZE   1000
 
 struct bio_queue {
 	void *data[MAX_QUEUE_SIZE];
