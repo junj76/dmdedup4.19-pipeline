@@ -1680,27 +1680,25 @@ static void process_data(struct dedup_config *dc, struct process_queue_bio proce
 
 static void add_to_hash_queue(struct bio *bio, struct dedup_config *dc)
 {
-	struct bio_queue hash_queue = dc->hash_queue;
-    spin_lock(&hash_queue.lock);  // 获取自旋锁
+    spin_lock(&dc->hash_queue.lock);  // 获取自旋锁
     // 将bio添加到查表队列
 	struct hash_queue_bio *hash_queue_bio = kmalloc(sizeof(hash_queue_bio), GFP_KERNEL);
     hash_queue_bio->bio = bio;
 	queue_push(&(dc->hash_queue), (void*)&hash_queue_bio);
 
-    spin_unlock(&hash_queue.lock);  // 释放自旋锁
+    spin_unlock(&dc->hash_queue.lock);  // 释放自旋锁
 }
 
 static void add_to_lookup_queue(struct bio *bio, struct dedup_config *dc, u8* hash)
 {
-	struct bio_queue lookup_queue = dc->lookup_queue;
-    spin_lock(&lookup_queue.lock);  // 获取自旋锁
+    spin_lock(&dc->lookup_queue.lock);  // 获取自旋锁
     // 将bio添加到查表队列
 	struct lookup_queue_bio *lookup_queue_bio = kmalloc(sizeof(struct lookup_queue_bio), GFP_KERNEL);
     lookup_queue_bio->bio = bio;
     lookup_queue_bio->hash = hash;
 	queue_push(&(dc->hash_queue), (void*)&lookup_queue_bio);
 
-    spin_unlock(&lookup_queue.lock);  // 释放自旋锁
+    spin_unlock(&dc->lookup_queue.lock);  // 释放自旋锁
 }
 
 static void add_to_process_queue(struct bio *bio, struct dedup_config *dc,
@@ -1708,8 +1706,7 @@ static void add_to_process_queue(struct bio *bio, struct dedup_config *dc,
                                 struct hash_pbn_value hash2pbn_value, 
                                 struct lbn_pbn_value lbn2pbn_value)
 {
-	struct bio_queue process_queue = dc->process_queue;
-    spin_lock(&process_queue.lock);  // 获取自旋锁
+    spin_lock(&dc->process_queue.lock);  // 获取自旋锁
 
     // 将bio添加到处理程序队列
 	struct process_queue_bio *process_queue_bio = kmalloc(sizeof(struct process_queue_bio), GFP_KERNEL);
@@ -1719,7 +1716,7 @@ static void add_to_process_queue(struct bio *bio, struct dedup_config *dc,
     process_queue_bio->lbn2pbn_value = lbn2pbn_value;
 	queue_push(&(dc->hash_queue), (void*)&process_queue_bio);
 
-    spin_unlock(&process_queue.lock);  // 释放自旋锁
+    spin_unlock(&dc->process_queue.lock);  // 释放自旋锁
 }
 
 static struct hash_queue_bio *get_next_bio_from_hash_queue(struct dedup_config *dc)
