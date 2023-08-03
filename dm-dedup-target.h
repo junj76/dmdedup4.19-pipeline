@@ -55,8 +55,12 @@
 
 #define MIN_DEDUP_WORK_IO	16
 
+#define MAX_QUEUE_SIZE   10000
+
 struct bio_queue {
-    struct list_head queue;  // bio请求队列
+	void *data[MAX_QUEUE_SIZE];
+	int front;
+	int rear;
     spinlock_t lock;         // 自旋锁，用于对队列进行保护
 };
 
@@ -138,20 +142,17 @@ struct lbn_pbn_value {
 // -----------------------------------------------------------------------------
 
 struct hash_queue_bio {
-	struct list_head queue;
 	struct bio *bio;
 	int status;
 };
 
 struct lookup_queue_bio { // compute_hash ---queue--- lookup
-    struct list_head queue;
     struct bio *bio;
     u8* hash; // hash
 	int status;
 };
 
 struct process_queue_bio { // lookup ---queue--- process
-    struct list_head queue;
     struct bio *bio;
     struct hash_pbn_value hash2pbn_value;
     struct lbn_pbn_value lbn2pbn_value;

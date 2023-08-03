@@ -84,7 +84,10 @@ static int lookup_func(struct dedup_config *dc);
 static int thread_process_func(void *data);
 static int process_func(struct dedup_config *dc);
 static void handle_error(int r, struct bio *bio);
-
+void init_queue(struct bio_queue *bio_queue);
+bool queue_is_empty(struct bio_queue *bio_queue);
+void queue_push(struct bio_queue *bio_queue, void *ptr);
+void* queue_pop(struct bio_queue *bio_queue);
 
 // ----------------------------------------------------------------
 
@@ -1280,13 +1283,15 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	// --------------------------pipeline--------------------------
 
-	// 初始化bio请求队列和自旋锁
-	INIT_LIST_HEAD(&dc->hash_queue.queue);
+	// 初始化bio自旋锁
 	spin_lock_init(&dc->hash_queue.lock);
-    INIT_LIST_HEAD(&dc->lookup_queue.queue);
     spin_lock_init(&dc->lookup_queue.lock);
-    INIT_LIST_HEAD(&dc->process_queue.queue);
     spin_lock_init(&dc->process_queue.lock);
+
+	// 初始化队列
+	init_queue(dc->hash_queue);
+	init_queue(dc->lookup_queue);
+	init_queue(dc->process_queue);
 
     // 创建流水线阶段线程
     hash_thread = kthread_run(thread_hash_func, (void*)dc, "hash_thread");
@@ -1680,8 +1685,7 @@ static void add_to_hash_queue(struct bio *bio, struct dedup_config *dc)
     // 将bio添加到查表队列
 	struct hash_queue_bio *hash_queue_bio = kmalloc(sizeof(hash_queue_bio), GFP_KERNEL);
     hash_queue_bio->bio = bio;
-	INIT_LIST_HEAD(&hash_queue_bio->queue);
-    list_add_tail(&hash_queue_bio->queue, &hash_queue.queue);
+	queue_push(dc->hash_queue, (void*)&hash_queue_bio)
 
     spin_unlock(&hash_queue.lock);  // 释放自旋锁
 }
@@ -1694,8 +1698,7 @@ static void add_to_lookup_queue(struct bio *bio, struct dedup_config *dc, u8* ha
 	struct lookup_queue_bio *lookup_queue_bio = kmalloc(sizeof(struct lookup_queue_bio), GFP_KERNEL);
     lookup_queue_bio->bio = bio;
     lookup_queue_bio->hash = hash;
-	INIT_LIST_HEAD(&lookup_queue_bio->queue);
-    list_add_tail(&lookup_queue_bio->queue, &lookup_queue.queue);
+	queue_push(dc->hash_queue, (void*)&lookup_queue_bio);
 
     spin_unlock(&lookup_queue.lock);  // 释放自旋锁
 }
@@ -1714,8 +1717,7 @@ static void add_to_process_queue(struct bio *bio, struct dedup_config *dc,
     process_queue_bio->result = result;
     process_queue_bio->hash2pbn_value = hash2pbn_value;
     process_queue_bio->lbn2pbn_value = lbn2pbn_value;
-	INIT_LIST_HEAD(&process_queue_bio->queue);
-    list_add_tail(&process_queue_bio->queue, &process_queue.queue);
+	queue_push(dc->hash_queue, (void*)&process_queue_bio);
 
     spin_unlock(&process_queue.lock);  // 释放自旋锁
 }
@@ -1727,11 +1729,10 @@ static struct hash_queue_bio *get_next_bio_from_hash_queue(struct dedup_config *
 
     spin_lock(&hash_queue->lock);  // 获取自旋锁
 
-    if (!list_empty(&hash_queue->queue)) {
+    if (!queue_is_empty(dc->hash_queue)) {
         // 从队列中获取下一个bio请求
-        struct list_head *entry = hash_queue->queue.next;
-        hash_queue_bio = list_entry(entry, struct hash_queue_bio, queue);
-        list_del(entry);
+        void *pop = queue_pop(dc->hash_queue);
+		hash_queue_bio = (struct hash_queue_bio*)pop;
     }
 
     spin_unlock(&hash_queue->lock);  // 释放自旋锁
@@ -1746,11 +1747,10 @@ static struct lookup_queue_bio *get_next_bio_from_lookup_queue(struct dedup_conf
 
     spin_lock(&lookup_queue->lock);  // 获取自旋锁
 
-    if (!list_empty(&lookup_queue->queue)) {
+    if (!queue_is_empty(dc->lookup_queue)) {
         // 从队列中获取下一个bio请求
-        struct list_head *entry = lookup_queue->queue.next;
-        lookup_queue_bio = list_entry(entry, struct lookup_queue_bio, queue);
-        list_del(entry);
+        void *pop = queue_pop(dc->lookup_queue);
+		lookup_queue_bio = (struct lookup_queue_bio*)pop;
     }
 
     spin_unlock(&lookup_queue->lock);  // 释放自旋锁
@@ -1765,11 +1765,10 @@ static struct process_queue_bio *get_next_bio_from_process_queue(struct dedup_co
 
     spin_lock(&process_queue->lock);  // 获取自旋锁
 
-    if (!list_empty(&process_queue->queue)) {
+    if (!queue_is_empty(dc->process_queue)) {
         // 从队列中获取下一个bio请求
-        struct list_head *entry = process_queue->queue.next;
-        process_queue_bio = list_entry(entry, struct process_queue_bio, queue);
-        list_del(entry);
+        void *pop = queue_pop(dc->process_queue);
+		process_queue_bio = (struct process_queue_bio*)pop;
     }
 
     spin_unlock(&process_queue->lock);  // 释放自旋锁
@@ -1789,13 +1788,15 @@ static int hash_func(struct dedup_config *dc)
         struct hash_queue_bio *hash_queue_bio = get_next_bio_from_hash_queue(dc);
 
         if (hash_queue_bio) {
-			printk(KERN_MYLOG "get bio from hash queue");
             // 求hash的处理逻辑
             u8 *hash;
             hash = calculate_hash(dc, hash_queue_bio->bio);
 
             // 将bio传递给下一个阶段
             add_to_lookup_queue(hash_queue_bio->bio, dc, hash);
+
+			// 释放内存
+			kfree(hash_queue_bio);
         }
 		else {
 			cond_resched();
@@ -1817,7 +1818,6 @@ static int lookup_func(struct dedup_config *dc)
         struct lookup_queue_bio *lookup_queue_bio = get_next_bio_from_lookup_queue(dc);
         if (lookup_queue_bio) {
             // 查表的处理逻辑
-			printk(KERN_MYLOG "get bio from lookup queue");
             int result;
             struct hash_pbn_value hash2pbn_value;
             struct lbn_pbn_value lbn2pbn_value;
@@ -1826,10 +1826,13 @@ static int lookup_func(struct dedup_config *dc)
 
             // 将bio传递给下一个阶段
             add_to_process_queue(lookup_queue_bio->bio, dc, result, hash2pbn_value, lbn2pbn_value);
+
+			// 释放内存
+			kfree(lookup_queue_bio);
         }
-	else {
-	    cond_resched();
-	}
+		else {
+			cond_resched();
+		}
     }
 
     return 0;
@@ -1849,7 +1852,6 @@ static int process_func(struct dedup_config *dc)
 
         if (process_queue_bio) {
             // 处理程序的逻辑
-			printk(KERN_MYLOG "get bio from process queue");
             process_data(dc, *process_queue_bio);
 
 			// flush
@@ -1862,6 +1864,9 @@ static int process_func(struct dedup_config *dc)
 			}
 				dc->writes_after_flush = 0;
 			}
+			
+			// 释放内存
+			kfree(process_queue_bio);
         }
 		else {
 			cond_resched();
@@ -1891,6 +1896,27 @@ static void handle_error(int r, struct bio *bio) {
 		break;
 	}
 	bio_endio(bio);
+}
+
+void init_queue(struct bio_queue *bio_queue) {
+	bio_queue->front = 0;
+	bio_queue->rear = 0;
+}
+
+bool queue_is_empty(struct bio_queue *bio_queue) {
+	return (bio_queue->front == bio_queue->rear);
+}
+
+void queue_push(struct bio_queue *bio_queue, void *ptr) {
+	bio_queue->data[bio_queue->rear] = ptr;
+	bio_queue->rear = (bio_queue->rear + 1) % MAX_QUEUE_SIZE;
+}
+
+void* queue_pop(struct bio_queue *bio_queue) {
+	void *ret;
+	ret = bio_queue->data[bio_queue->front];
+	bio_queue->front = (bio_queue->front + 1) % MAX_QUEUE_SIZE;
+	return ret;
 }
 
 // ----------------------------------pipeline end--------------------------------
