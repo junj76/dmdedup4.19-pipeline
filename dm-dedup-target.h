@@ -122,7 +122,6 @@ struct dedup_config {
 	struct bio_queue lookup_queue;  // 查表队列
 	struct bio_queue process_queue; // 处理程序队列
 	int task_completed; // 标志两个线程完成
-	// pthread_mutex_t mutex // 互斥锁，保护对上面标志的并发访问
 	struct mutex my_mutex; // 互斥锁，保护对上面标志的并发访问
 };
 

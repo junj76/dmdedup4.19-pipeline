@@ -31,6 +31,7 @@
 #include <linux/kthread.h>
 #include <linux/sched.h>
 #include <linux/mutex.h>
+#include <linux/kernel.h>
 
 #define HASH_LBN 0
 #define HASH_NOLBN 1
@@ -1290,7 +1291,6 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
     lookup_thread = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread");
     process_thread = kthread_run(thread_process_func, (void*)dc, "process_thread");
 	dc->task_completed = 0; // 标志两个线程完成
-	// pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER; // 互斥锁，保护对上面标志的并发访问
 	mutex_unlock(&dc->my_mutex);
 	// ------------------------pipeline end-------------------------- 
 	return 0;
@@ -1596,8 +1596,7 @@ static int lookup_table(struct dedup_config *dc, struct bio *bio, u8 *hash,
     args1.r = r1;
     struct ThreadArgs args2 = args1;
     args2.r = r2;
-    // pthread_create(&thread1, NULL, thread_lookup_hash_pbn, (void*)&args1);
-    // pthread_create(&thread2, NULL, thread_lookup_lbn_pbn, (void*)&args2);
+
     kthread1 = kthread_run(thread_lookup_hash_pbn, (void*)&args1, "kthread1");
     kthread2 = kthread_run(thread_lookup_lbn_pbn, (void*)&args2, "ktrhead2");
 
@@ -1677,7 +1676,6 @@ static void add_to_hash_queue(struct bio *bio, struct dedup_config *dc)
 	struct bio_queue hash_queue = dc->hash_queue;
     spin_lock(&hash_queue.lock);  // 获取自旋锁
     // 将bio添加到查表队列
-    // struct hash_queue_bio hash_queue_bio;
 	struct hash_queue_bio *hash_queue_bio = kmalloc(sizeof(hash_queue_bio), GFP_KERNEL);
     hash_queue_bio->bio = bio;
     list_add_tail(&hash_queue_bio->queue, &hash_queue.queue);
@@ -1788,6 +1786,7 @@ static int hash_func(struct dedup_config *dc)
         struct hash_queue_bio *hash_queue_bio = get_next_bio_from_hash_queue(dc);
 
         if (hash_queue_bio) {
+			printk(KERN_INFO "get bio from hash queue");
             // 求hash的处理逻辑
             u8 *hash;
             hash = calculate_hash(dc, hash_queue_bio->bio);
@@ -1815,6 +1814,7 @@ static int lookup_func(struct dedup_config *dc)
         struct lookup_queue_bio *lookup_queue_bio = get_next_bio_from_lookup_queue(dc);
         if (lookup_queue_bio) {
             // 查表的处理逻辑
+			printk(KERN_INFO "get bio from lookup queue");
             int result;
             struct hash_pbn_value hash2pbn_value;
             struct lbn_pbn_value lbn2pbn_value;
@@ -1846,6 +1846,7 @@ static int process_func(struct dedup_config *dc)
 
         if (process_queue_bio) {
             // 处理程序的逻辑
+			printk(KERN_INFO "get bio from process queue");
             process_data(dc, *process_queue_bio);
 
 			// flush
