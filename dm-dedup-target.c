@@ -1289,9 +1289,9 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
     spin_lock_init(&dc->process_queue.lock);
 
 	// 初始化队列
-	init_queue(dc->hash_queue);
-	init_queue(dc->lookup_queue);
-	init_queue(dc->process_queue);
+	init_queue(&(dc->hash_queue));
+	init_queue(&(dc->lookup_queue));
+	init_queue(&(dc->process_queue));
 
     // 创建流水线阶段线程
     hash_thread = kthread_run(thread_hash_func, (void*)dc, "hash_thread");
