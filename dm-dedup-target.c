@@ -33,6 +33,8 @@
 #include <linux/mutex.h>
 #include <linux/kernel.h>
 
+#define KERN_MYLOG "<8>"
+
 #define HASH_LBN 0
 #define HASH_NOLBN 1
 #define NOHASH_LBN 3
@@ -1520,7 +1522,7 @@ static u8* calculate_hash(struct dedup_config *dc, struct bio *bio)
     // 分配hash的存储空间
     u8* hash = kmalloc(sizeof(u8) * MAX_DIGEST_SIZE, GFP_KERNEL);
     if(hash == NULL) {
-        printk(KERN_INFO "Memory allocation failed\n");
+        printk(KERN_MYLOG "Memory allocation failed\n");
         return NULL;
     }
     int r;
@@ -1787,7 +1789,7 @@ static int hash_func(struct dedup_config *dc)
         struct hash_queue_bio *hash_queue_bio = get_next_bio_from_hash_queue(dc);
 
         if (hash_queue_bio) {
-			printk(KERN_INFO "get bio from hash queue");
+			printk(KERN_MYLOG "get bio from hash queue");
             // 求hash的处理逻辑
             u8 *hash;
             hash = calculate_hash(dc, hash_queue_bio->bio);
@@ -1815,7 +1817,7 @@ static int lookup_func(struct dedup_config *dc)
         struct lookup_queue_bio *lookup_queue_bio = get_next_bio_from_lookup_queue(dc);
         if (lookup_queue_bio) {
             // 查表的处理逻辑
-			printk(KERN_INFO "get bio from lookup queue");
+			printk(KERN_MYLOG "get bio from lookup queue");
             int result;
             struct hash_pbn_value hash2pbn_value;
             struct lbn_pbn_value lbn2pbn_value;
@@ -1847,7 +1849,7 @@ static int process_func(struct dedup_config *dc)
 
         if (process_queue_bio) {
             // 处理程序的逻辑
-			printk(KERN_INFO "get bio from process queue");
+			printk(KERN_MYLOG "get bio from process queue");
             process_data(dc, *process_queue_bio);
 
 			// flush
