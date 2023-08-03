@@ -1525,8 +1525,10 @@ static u8* calculate_hash(struct dedup_config *dc, struct bio *bio)
 {
     // 求hash的处理逻辑
     // 分配hash的存储空间
-    u8* hash = kmalloc(MAX_DIGEST_SIZE, GFP_KERNEL);
+    u8* hash = kmalloc(sizeof(u8) * MAX_DIGEST_SIZE, GFP_KERNEL);
     int r;
+	if(bio == NULL || dc->desc_table == NULL || hash == NULL)
+		return NULL;
     compute_hash_bio(dc->desc_table, bio, hash);
     return hash;
 }
@@ -1785,7 +1787,7 @@ static int hash_func(struct dedup_config *dc)
             // 求hash的处理逻辑
             u8 *hash;
             hash = calculate_hash(dc, hash_queue_bio->bio);
-
+			if(hash == NULL) return 0;
             // 将bio传递给下一个阶段
             add_to_lookup_queue(hash_queue_bio->bio, dc, hash);
 
