@@ -1678,6 +1678,7 @@ static void add_to_hash_queue(struct bio *bio, struct dedup_config *dc)
     // 将bio添加到查表队列
 	struct hash_queue_bio *hash_queue_bio = kmalloc(sizeof(hash_queue_bio), GFP_KERNEL);
     hash_queue_bio->bio = bio;
+	INIT_LIST_HEAD(&hash_queue_bio->queue);
     list_add_tail(&hash_queue_bio->queue, &hash_queue.queue);
 
     spin_unlock(&hash_queue.lock);  // 释放自旋锁
@@ -1688,10 +1689,10 @@ static void add_to_lookup_queue(struct bio *bio, struct dedup_config *dc, u8* ha
 	struct bio_queue lookup_queue = dc->lookup_queue;
     spin_lock(&lookup_queue.lock);  // 获取自旋锁
     // 将bio添加到查表队列
-    // struct lookup_queue_bio lookup_queue_bio;
 	struct lookup_queue_bio *lookup_queue_bio = kmalloc(sizeof(struct lookup_queue_bio), GFP_KERNEL);
     lookup_queue_bio->bio = bio;
     lookup_queue_bio->hash = hash;
+	INIT_LIST_HEAD(&lookup_queue_bio->queue);
     list_add_tail(&lookup_queue_bio->queue, &lookup_queue.queue);
 
     spin_unlock(&lookup_queue.lock);  // 释放自旋锁
@@ -1706,12 +1707,12 @@ static void add_to_process_queue(struct bio *bio, struct dedup_config *dc,
     spin_lock(&process_queue.lock);  // 获取自旋锁
 
     // 将bio添加到处理程序队列
-    // struct process_queue_bio process_queue_bio;
 	struct process_queue_bio *process_queue_bio = kmalloc(sizeof(struct process_queue_bio), GFP_KERNEL);
     process_queue_bio->bio = bio;
     process_queue_bio->result = result;
     process_queue_bio->hash2pbn_value = hash2pbn_value;
     process_queue_bio->lbn2pbn_value = lbn2pbn_value;
+	INIT_LIST_HEAD(&process_queue_bio->queue);
     list_add_tail(&process_queue_bio->queue, &process_queue.queue);
 
     spin_unlock(&process_queue.lock);  // 释放自旋锁
@@ -1794,9 +1795,9 @@ static int hash_func(struct dedup_config *dc)
             // 将bio传递给下一个阶段
             add_to_lookup_queue(hash_queue_bio->bio, dc, hash);
         }
-	else {
-	    cond_resched();
-	}
+		else {
+			cond_resched();
+		}
     }
 
     return 0;
@@ -1857,12 +1858,12 @@ static int process_func(struct dedup_config *dc)
 			if (r < 0) {
 				handle_error(r, process_queue_bio->bio);
 			}
-			dc->writes_after_flush = 0;
+				dc->writes_after_flush = 0;
 			}
         }
-	else {
-	    cond_resched();
-	}
+		else {
+			cond_resched();
+		}
     }
 
     return 0;
