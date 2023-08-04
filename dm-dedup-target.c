@@ -1909,10 +1909,15 @@ void queue_push(struct bio_queue *bio_queue, void *ptr) {
 }
 
 void* queue_pop(struct bio_queue *bio_queue) {
-	void *ret;
-	ret = bio_queue->data[bio_queue->front];
-	bio_queue->front = (bio_queue->front + 1) % MAX_QUEUE_SIZE;
-	return ret;
+	if(!queue_is_empty(bio_queue)) {
+		void *ret;
+		ret = bio_queue->data[bio_queue->front];
+		bio_queue->front = (bio_queue->front + 1) % MAX_QUEUE_SIZE;
+		return ret;
+	}
+	else {
+		return NULL;
+	}
 }
 
 // ----------------------------------pipeline end--------------------------------
