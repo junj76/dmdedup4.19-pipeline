@@ -52,6 +52,7 @@
 static struct task_struct *hash_thread;
 static struct task_struct *lookup_thread;
 static struct task_struct *process_thread;
+static struct task_struct *process_thread2;
 
 static u8* calculate_hash(struct dedup_config *dc, struct bio *bio);
 int thread_lookup_hash_pbn(void *args);                        
@@ -587,6 +588,12 @@ static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
 	return r;
 }
 
+static int generate_random_zero_one(void) { //随机获得0或1
+    unsigned int random_number;
+    get_random_bytes(&random_number, sizeof(random_number));
+    return random_number % 2;
+}
+
 /*
  * Performs a lookup for Hash->PBN entry.
  * If entry is not found, it invokes handle_write_no_hash.
@@ -618,9 +625,11 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 			return -ENOMEM;
 		bio = new_bio;
 	}
-	add_to_hash_queue(bio, dc);
-
-	/*
+	int random = generate_random_zero_one();
+	if(random == 0) {
+		add_to_hash_queue(bio, dc);
+		goto out;
+	}
 	lbn = bio_lbn(dc, bio);
 
 	r = compute_hash_bio(dc->desc_table, bio, hash);
@@ -648,7 +657,7 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 			return r;
 		dc->writes_after_flush = 0;
 	}
-	*/
+out:
 	return 0;
 }
 
@@ -1297,6 +1306,7 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
     hash_thread = kthread_run(thread_hash_func, (void*)dc, "hash_thread");
     lookup_thread = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread");
     process_thread = kthread_run(thread_process_func, (void*)dc, "process_thread");
+	process_thread2 = kthread_run(thread_process_func, (void*)dc, "process_thread2");
 	dc->task_completed = 0; // 标志两个线程完成
 	mutex_unlock(&dc->my_mutex);
 	// ------------------------pipeline end-------------------------- 
@@ -1361,6 +1371,7 @@ static void dm_dedup_dtr(struct dm_target *ti)
     kthread_stop(hash_thread);
     kthread_stop(lookup_thread);
     kthread_stop(process_thread);
+	kthread_stop(process_thread2);
 }
 
 /* Gives Dmdedup status. */
@@ -1653,25 +1664,25 @@ static void process_data(struct dedup_config *dc, struct process_queue_bio proce
                                     process_queue_bio.hash2pbn_value.pbn,
 						            process_queue_bio.lbn2pbn_value);
         dc->dupwrites++;
-	break;
+		break;
     case HASH_NOLBN:
         __handle_no_lbn_pbn_with_hash(dc, process_queue_bio.bio,
                                     bio_lbn(dc, process_queue_bio.bio), 
                                     process_queue_bio.hash2pbn_value.pbn,
 						            process_queue_bio.lbn2pbn_value);
-	break;
+		break;
     case NOHASH_LBN:
 		__handle_has_lbn_pbn(dc, process_queue_bio.bio,
                             bio_lbn(dc, process_queue_bio.bio), 
                             process_queue_bio.hash, 
                             process_queue_bio.lbn2pbn_value.pbn);
         dc->dupwrites++;
-	break;
+		break;
     case NOHASH_NOLBN:
         __handle_no_lbn_pbn(dc, process_queue_bio.bio,
                             bio_lbn(dc, process_queue_bio.bio), 
                             process_queue_bio.hash);
-	break;
+		break;
     }
     kfree(process_queue_bio.hash);
 }
