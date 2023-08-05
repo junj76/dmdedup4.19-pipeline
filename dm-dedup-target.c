@@ -1807,9 +1807,9 @@ static int handle_func(struct dedup_config *dc) {
 		if(hash_queue_bio) {
 			my_handle(dc, hash_queue_bio->bio);
 		}
-		else {
-			cond_resched();
-		}
+		// else {
+		// 	cond_resched();
+		// }
 	}
 }
 
@@ -1835,9 +1835,9 @@ static int hash_func(struct dedup_config *dc)
 			// 释放内存
 			kfree(hash_queue_bio);
         }
-		else {
-			cond_resched();
-		}
+		// else {
+		// 	cond_resched();
+		// }
     }
 
     return 0;
@@ -1867,9 +1867,9 @@ static int lookup_func(struct dedup_config *dc)
 			// 释放内存
 			kfree(lookup_queue_bio);
         }
-		else {
-			cond_resched();
-		}
+		// else {
+		// 	cond_resched();
+		// }
     }
 
     return 0;
@@ -1905,9 +1905,9 @@ static int process_func(struct dedup_config *dc)
 			// 释放内存
 			kfree(process_queue_bio);
         }
-		else {
-			cond_resched();
-		}
+		// else {
+		// 	cond_resched();
+		// }
     }
 
     return 0;
