@@ -1786,6 +1786,12 @@ static struct process_queue_bio *get_next_bio_from_process_queue(struct dedup_co
 }
 
 static int my_handle(struct dedup_config *dc, struct bio *bio) {
+	u64 lbn;
+	u8 hash[MAX_DIGEST_SIZE];
+	struct hash_pbn_value hashpbn_value;
+	u32 vsize;
+	struct bio *new_bio = NULL;
+	int r;
 	lbn = bio_lbn(dc, bio);
 
 	r = compute_hash_bio(dc->desc_table, bio, hash);
@@ -1822,7 +1828,7 @@ static int thread_handle_func(void *data) {
 }
 
 static int handle_func(struct dedup_config *dc) {
-	while(!kthread_shoule_stop()) {
+	while(!kthread_should_stop()) {
 		struct hash_queue_bio *hash_queue_bio = get_next_bio_from_hash_queue(dc);
 
 		if(hash_queue_bio) {
