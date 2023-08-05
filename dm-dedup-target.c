@@ -626,33 +626,6 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 		bio = new_bio;
 	}
 	add_to_hash_queue(bio, dc);
-	// lbn = bio_lbn(dc, bio);
-
-	// r = compute_hash_bio(dc->desc_table, bio, hash);
-	// if (r)
-	// 	return r;
-
-	// r = dc->kvs_hash_pbn->kvs_lookup(dc->kvs_hash_pbn, hash,
-	// 				 dc->crypto_key_size,
-	// 				 &hashpbn_value, &vsize);
-
-	// if (r == -ENODATA)
-	// 	r = handle_write_no_hash(dc, bio, lbn, hash);
-	// else if (r == 0)
-	// 	r = handle_write_with_hash(dc, bio, lbn, hash,
-	// 				   hashpbn_value);
-
-	// if (r < 0)
-	// 	return r;
-
-	// dc->writes_after_flush++;
-	// if ((dc->flushrq && dc->writes_after_flush >= dc->flushrq) ||
-	//     (bio->bi_opf & (REQ_PREFLUSH | REQ_FUA))) {
-	// 	r = dc->mdops->flush_meta(dc->bmd);
-	// 	if (r < 0)
-	// 		return r;
-	// 	dc->writes_after_flush = 0;
-	// }
 	return 0;
 }
 
@@ -1298,16 +1271,16 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	init_queue(&(dc->process_queue));
 
     // 创建流水线阶段线程
-    // hash_thread = kthread_run(thread_hash_func, (void*)dc, "hash_thread");
-    // lookup_thread = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread");
-    // process_thread = kthread_run(thread_process_func, (void*)dc, "process_thread");
-	// hash_thread2 = kthread_run(thread_hash_func, (void*)dc, "hash_thread2");    
-	// lookup_thread2 = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread2");
-	// process_thread2 = kthread_run(thread_process_func, (void*)dc, "process_thread2");
-	t1 = kthread_run(thread_handle_func, (void*)dc, "process_thread2");
-	t2 = kthread_run(thread_handle_func, (void*)dc, "process_thread2");
-	t3 = kthread_run(thread_handle_func, (void*)dc, "process_thread2");
-	t4 = kthread_run(thread_handle_func, (void*)dc, "process_thread2");
+    hash_thread = kthread_run(thread_hash_func, (void*)dc, "hash_thread");
+    lookup_thread = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread");
+    process_thread = kthread_run(thread_process_func, (void*)dc, "process_thread");
+	hash_thread2 = kthread_run(thread_hash_func, (void*)dc, "hash_thread2");    
+	lookup_thread2 = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread2");
+	process_thread2 = kthread_run(thread_process_func, (void*)dc, "process_thread2");
+	t1 = kthread_run(thread_handle_func, (void*)dc, "handle_thread1");
+	t2 = kthread_run(thread_handle_func, (void*)dc, "handle_thread2");
+	t3 = kthread_run(thread_handle_func, (void*)dc, "handle_thread3");
+	t4 = kthread_run(thread_handle_func, (void*)dc, "handle_thread4");
 
 	dc->task_completed = 0; // 标志两个线程完成
 	mutex_unlock(&dc->my_mutex);
@@ -1370,10 +1343,10 @@ static void dm_dedup_dtr(struct dm_target *ti)
 	kfree(dc);
 
 	// 停止并清理流水线阶段线程
-    // kthread_stop(hash_thread);
-    // kthread_stop(lookup_thread);
-    // kthread_stop(process_thread);
-	// kthread_stop(process_thread2);
+    kthread_stop(hash_thread);
+    kthread_stop(lookup_thread);
+    kthread_stop(process_thread);
+	kthread_stop(process_thread2);
 }
 
 /* Gives Dmdedup status. */
