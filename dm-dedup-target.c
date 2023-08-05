@@ -1305,10 +1305,10 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	// hash_thread2 = kthread_run(thread_hash_func, (void*)dc, "hash_thread2");    
 	// lookup_thread2 = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread2");
 	// process_thread2 = kthread_run(thread_process_func, (void*)dc, "process_thread2");
-	t1 = kthread_run = kthread_run(thread_handle_func, (void*)dc, "process_thread2");
-	t2 = kthread_run = kthread_run(thread_handle_func, (void*)dc, "process_thread2");
-	t3 = kthread_run = kthread_run(thread_handle_func, (void*)dc, "process_thread2");
-	t4 = kthread_run = kthread_run(thread_handle_func, (void*)dc, "process_thread2");
+	t1 = kthread_run(thread_handle_func, (void*)dc, "process_thread2");
+	t2 = kthread_run(thread_handle_func, (void*)dc, "process_thread2");
+	t3 = kthread_run(thread_handle_func, (void*)dc, "process_thread2");
+	t4 = kthread_run(thread_handle_func, (void*)dc, "process_thread2");
 
 	dc->task_completed = 0; // 标志两个线程完成
 	mutex_unlock(&dc->my_mutex);
