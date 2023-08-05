@@ -94,6 +94,7 @@ bool queue_is_empty(struct bio_queue *bio_queue);
 void queue_push(struct bio_queue *bio_queue, void *ptr);
 void* queue_pop(struct bio_queue *bio_queue);
 static int thread_handle_func(void *data);
+static int handle_func(struct dedup_config *dc);
 
 // ----------------------------------------------------------------
 
@@ -1832,7 +1833,7 @@ static int handle_func(struct dedup_config *dc) {
 		struct hash_queue_bio *hash_queue_bio = get_next_bio_from_hash_queue(dc);
 
 		if(hash_queue_bio) {
-			my_handle(dc, hash_queue_bio->bio)
+			my_handle(dc, hash_queue_bio->bio);
 		}
 		else {
 			cond_resched();
