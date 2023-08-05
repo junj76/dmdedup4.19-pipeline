@@ -1812,6 +1812,7 @@ static int my_handle(struct dedup_config *dc, struct bio *bio) {
 		if (r < 0)
 			return r;
 		dc->writes_after_flush = 0;
+	}
 	return 0;
 }
 
