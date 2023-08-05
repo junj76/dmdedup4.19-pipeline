@@ -588,10 +588,10 @@ static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
 	return r;
 }
 
-static int generate_random_zero_one(void) { //随机获得0或1
+static int generate_random(void) { //随机获得0或1
     unsigned int random_number;
     get_random_bytes(&random_number, sizeof(random_number));
-    return random_number % 2;
+    return random_number % 3;
 }
 
 /*
@@ -626,7 +626,7 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 		bio = new_bio;
 	}
 	int random = generate_random_zero_one();
-	if(random == 0) {
+	if(random != 0) {
 		add_to_hash_queue(bio, dc);
 		goto out;
 	}
