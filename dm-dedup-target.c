@@ -625,7 +625,7 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 			return -ENOMEM;
 		bio = new_bio;
 	}
-	int random = generate_random_zero_one();
+	int random = generate_random();
 	if(random != 0) {
 		add_to_hash_queue(bio, dc);
 		goto out;
