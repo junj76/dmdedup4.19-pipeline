@@ -626,7 +626,6 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 		bio = new_bio;
 	}
 	add_to_hash_queue(bio, dc);
-	goto out;
 	// lbn = bio_lbn(dc, bio);
 
 	// r = compute_hash_bio(dc->desc_table, bio, hash);
