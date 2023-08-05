@@ -15,6 +15,7 @@
  * This file is released under the GPL.
  */
 
+#include <assert.h>
 #include <linux/vmalloc.h>
 #include <linux/kdev_t.h>
 
@@ -50,7 +51,9 @@
 // --------------------------------------------------------------------
 
 static struct task_struct *hash_thread;
+static struct task_struct *hash_thread2;
 static struct task_struct *lookup_thread;
+static struct task_struct *lookup_thread2;
 static struct task_struct *process_thread;
 static struct task_struct *process_thread2;
 
@@ -591,7 +594,7 @@ static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
 static int generate_random(void) { //随机获得0或1
     unsigned int random_number;
     get_random_bytes(&random_number, sizeof(random_number));
-    return random_number % 3;
+    return random_number % 5;
 }
 
 /*
@@ -1306,6 +1309,8 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
     hash_thread = kthread_run(thread_hash_func, (void*)dc, "hash_thread");
     lookup_thread = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread");
     process_thread = kthread_run(thread_process_func, (void*)dc, "process_thread");
+	hash_thread2 = kthread_run(thread_hash_func, (void*)dc, "hash_thread2");    
+	lookup_thread2 = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread2");
 	process_thread2 = kthread_run(thread_process_func, (void*)dc, "process_thread2");
 	dc->task_completed = 0; // 标志两个线程完成
 	mutex_unlock(&dc->my_mutex);
