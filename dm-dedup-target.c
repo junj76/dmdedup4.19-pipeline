@@ -1801,7 +1801,7 @@ static int thread_handle_func(void *data) {
 }
 
 static int handle_func(struct dedup_config *dc) {
-	while(!kthread_should_stop()) {
+	while(true) {
 		struct hash_queue_bio *hash_queue_bio = get_next_bio_from_hash_queue(dc);
 
 		if(hash_queue_bio) {
@@ -1821,7 +1821,7 @@ static int thread_hash_func(void *data)
 
 static int hash_func(struct dedup_config *dc)
 {
-    while (!kthread_should_stop()) {
+    while (true) {
         struct hash_queue_bio *hash_queue_bio = get_next_bio_from_hash_queue(dc);
 
         if (hash_queue_bio) {
@@ -1851,7 +1851,7 @@ static int thread_lookup_func(void *data)
 
 static int lookup_func(struct dedup_config *dc)
 {
-    while (!kthread_should_stop()) {
+    while (true) {
         struct lookup_queue_bio *lookup_queue_bio = get_next_bio_from_lookup_queue(dc);
         if (lookup_queue_bio) {
             // 查表的处理逻辑
@@ -1883,7 +1883,7 @@ static int thread_process_func(void *data)
 
 static int process_func(struct dedup_config *dc)
 {
-    while (!kthread_should_stop()) {
+    while (true) {
         // struct bio *bio = get_next_bio(&process_queue);
         struct process_queue_bio *process_queue_bio = get_next_bio_from_process_queue(dc);
 
