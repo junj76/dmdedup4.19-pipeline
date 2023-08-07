@@ -625,7 +625,7 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 			return -ENOMEM;
 		bio = new_bio;
 	}
-	add_to_hash_queue(bio, dc);
+	// add_to_hash_queue(bio, dc);
 	return 0;
 }
 
