@@ -1271,12 +1271,12 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	init_queue(&(dc->process_queue));
 
     // 创建流水线阶段线程
-    hash_thread = kthread_run(thread_hash_func, (void*)dc, "hash_thread");
-    lookup_thread = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread");
-    process_thread = kthread_run(thread_process_func, (void*)dc, "process_thread");
-	hash_thread2 = kthread_run(thread_hash_func, (void*)dc, "hash_thread2");    
-	lookup_thread2 = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread2");
-	process_thread2 = kthread_run(thread_process_func, (void*)dc, "process_thread2");
+    // hash_thread = kthread_run(thread_hash_func, (void*)dc, "hash_thread");
+    // lookup_thread = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread");
+    // process_thread = kthread_run(thread_process_func, (void*)dc, "process_thread");
+	// hash_thread2 = kthread_run(thread_hash_func, (void*)dc, "hash_thread2");    
+	// lookup_thread2 = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread2");
+	// process_thread2 = kthread_run(thread_process_func, (void*)dc, "process_thread2");
 	t1 = kthread_run(thread_handle_func, (void*)dc, "handle_thread1");
 	t2 = kthread_run(thread_handle_func, (void*)dc, "handle_thread2");
 	t3 = kthread_run(thread_handle_func, (void*)dc, "handle_thread3");
@@ -1343,10 +1343,10 @@ static void dm_dedup_dtr(struct dm_target *ti)
 	kfree(dc);
 
 	// 停止并清理流水线阶段线程
-    kthread_stop(hash_thread);
-    kthread_stop(lookup_thread);
-    kthread_stop(process_thread);
-	kthread_stop(process_thread2);
+    kthread_stop(t1);
+    kthread_stop(t2);
+    kthread_stop(t3);
+	kthread_stop(t4);
 }
 
 /* Gives Dmdedup status. */
