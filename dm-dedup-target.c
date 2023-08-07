@@ -1807,9 +1807,9 @@ static int handle_func(struct dedup_config *dc) {
 		if(hash_queue_bio) {
 			my_handle(dc, hash_queue_bio->bio);
 		}
-		// else {
-		// 	cond_resched();
-		// }
+		else {
+			cond_resched();
+		}
 	}
 }
 
