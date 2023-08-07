@@ -626,6 +626,8 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 		bio = new_bio;
 	}
 	// add_to_hash_queue(bio, dc);
+	bio->bi_status = BLK_STS_OK;
+	bio_endio(bio);
 	return 0;
 }
 
