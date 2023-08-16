@@ -15,7 +15,7 @@
  * This file is released under the GPL.
  */
 
-// #include <assert.h>
+#include <asm-generic/errno-base.h>
 #include <linux/vmalloc.h>
 #include <linux/kdev_t.h>
 
@@ -28,75 +28,12 @@
 #include "dm-dedup-kvstore.h"
 #include "dm-dedup-check.h"
 
-#include <linux/slab.h>
-#include <linux/kthread.h>
-#include <linux/sched.h>
-#include <linux/mutex.h>
-#include <linux/kernel.h>
-
-#define KERN_MYLOG "<8>"
-
-#define HASH_LBN 0
-#define HASH_NOLBN 1
-#define NOHASH_LBN 3
-#define NOHASH_NOLBN 4
-
 #define MAX_DEV_NAME_LEN (64)
 
 #define MIN_IOS 64
 
 #define MIN_DATA_DEV_BLOCK_SIZE (4 * 1024)
 #define MAX_DATA_DEV_BLOCK_SIZE (1024 * 1024)
-
-// --------------------------------------------------------------------
-
-static struct task_struct *hash_thread;
-static struct task_struct *hash_thread2;
-static struct task_struct *lookup_thread;
-static struct task_struct *lookup_thread2;
-static struct task_struct *process_thread;
-static struct task_struct *process_thread2;
-static struct task_struct *t1, *t2, *t3, *t4;
-
-static u8* calculate_hash(struct dedup_config *dc, struct bio *bio);
-int thread_lookup_hash_pbn(void *args);                        
-static void lookup_hash_pbn(struct dedup_config *dc, struct bio *bio, u8 *hash, 
-                        struct hash_pbn_value *hash2pbn_value, 
-                        struct lbn_pbn_value *lbn2pbn_value,
-                        int *r1) ;
-int thread_lookup_lbn_pbn(void *args);                        
-static void lookup_lbn_pbn(struct dedup_config *dc, struct bio *bio, u8 *hash, 
-                        struct hash_pbn_value *hash2pbn_value, 
-                        struct lbn_pbn_value *lbn2pbn_value, 
-                        int *r2);
-static int lookup_table(struct dedup_config *dc, struct bio *bio, u8 *hash, 
-                        struct hash_pbn_value *hash2pbn_value, 
-                        struct lbn_pbn_value *lbn2pbn_value);
-static void process_data(struct dedup_config *dc, struct process_queue_bio process_queue_bio);
-static void add_to_hash_queue(struct bio *bio, struct dedup_config *dc);
-static void add_to_lookup_queue(struct bio *bio, struct dedup_config *dc, u8* hash);
-static void add_to_process_queue(struct bio *bio, struct dedup_config *dc,
-								int result, 
-                                struct hash_pbn_value hash2pbn_value, 
-                                struct lbn_pbn_value lbn2pbn_value);
-static struct hash_queue_bio *get_next_bio_from_hash_queue(struct dedup_config *dc);
-static struct lookup_queue_bio *get_next_bio_from_lookup_queue(struct dedup_config *dc);
-static struct process_queue_bio *get_next_bio_from_process_queue(struct dedup_config *dc);
-static int thread_hash_func(void *data);
-static int hash_func(struct dedup_config *dc);
-static int thread_lookup_func(void *data);
-static int lookup_func(struct dedup_config *dc);
-static int thread_process_func(void *data);
-static int process_func(struct dedup_config *dc);
-static void handle_error(int r, struct bio *bio);
-void init_queue(struct bio_queue *bio_queue);
-bool queue_is_empty(struct bio_queue *bio_queue);
-void queue_push(struct bio_queue *bio_queue, void *ptr);
-void* queue_pop(struct bio_queue *bio_queue);
-static int thread_handle_func(void *data);
-static int handle_func(struct dedup_config *dc);
-
-// ----------------------------------------------------------------
 
 struct on_disk_stats {
 	u64 physical_block_counter;
@@ -112,6 +49,30 @@ struct dedup_work {
 	struct dedup_config *config;
 	struct bio *bio;
 };
+
+struct hash_work {
+    struct work_struct worker;
+    struct dedup_config *config;
+    struct bio *bio;
+    int status;
+}
+
+struct lookup_work {
+    struct work_struct worker;
+    struct dedup_config *config;
+    struct bio *bio;
+    int status;
+    u8 *hash;
+}
+
+struct process_work {
+    struct work_struct worker;
+    struct dedup_config *config;
+    struct bio *bio;
+    int status;
+    u8 *hash;
+    int result;
+}
 
 enum backend {
 	BKND_INRAM,
@@ -625,9 +586,35 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 			return -ENOMEM;
 		bio = new_bio;
 	}
-	// add_to_hash_queue(bio, dc);
-	bio->bi_status = BLK_STS_OK;
-	bio_endio(bio);
+
+	lbn = bio_lbn(dc, bio);
+
+	r = compute_hash_bio(dc->desc_table, bio, hash);
+	if (r)
+		return r;
+
+	r = dc->kvs_hash_pbn->kvs_lookup(dc->kvs_hash_pbn, hash,
+					 dc->crypto_key_size,
+					 &hashpbn_value, &vsize);
+
+	if (r == -ENODATA)
+		r = handle_write_no_hash(dc, bio, lbn, hash);
+	else if (r == 0)
+		r = handle_write_with_hash(dc, bio, lbn, hash,
+					   hashpbn_value);
+
+	if (r < 0)
+		return r;
+
+	dc->writes_after_flush++;
+	if ((dc->flushrq && dc->writes_after_flush >= dc->flushrq) ||
+	    (bio->bi_opf & (REQ_PREFLUSH | REQ_FUA))) {
+		r = dc->mdops->flush_meta(dc->bmd);
+		if (r < 0)
+			return r;
+		dc->writes_after_flush = 0;
+	}
+
 	return 0;
 }
 
@@ -721,7 +708,7 @@ out:
 static void process_bio(struct dedup_config *dc, struct bio *bio)
 {
 	int r;
-	// 检查传入的bio是否是预刷新（REQ_PREFLUSH）或强制写入（REQ_FUA）操作，并且没有数据扇区
+
 	if (bio->bi_opf & (REQ_PREFLUSH | REQ_FUA) && !bio_sectors(bio)) {
 		r = dc->mdops->flush_meta(dc->bmd);
 		if (r == 0)
@@ -729,12 +716,12 @@ static void process_bio(struct dedup_config *dc, struct bio *bio)
 		do_io_remap_device(dc, bio);
 		return;
 	}
-	if (bio_op(bio) == REQ_OP_DISCARD) { // bio类型为丢弃
+	if (bio_op(bio) == REQ_OP_DISCARD) {
 		r = handle_discard(dc, bio);
 		return;
 	}
 
-	switch (bio_data_dir(bio)) { // 根据bio请求是读还是写分别处理
+	switch (bio_data_dir(bio)) {
 	case READ:
 		r = handle_read(dc, bio);
 		break;
@@ -742,7 +729,7 @@ static void process_bio(struct dedup_config *dc, struct bio *bio)
 		r = handle_write(dc, bio);
 	}
 
-	if (r < 0) { // 处理过程中发生错误(r<0)，根据错误代码设置io状态
+	if (r < 0) {
 		switch (r) {
 		case -EWOULDBLOCK:
 			bio->bi_status = BLK_STS_AGAIN;
@@ -1070,6 +1057,9 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	struct dedup_args da;
 	struct dedup_config *dc;
 	struct workqueue_struct *wq;
+    struct workqueue_struct *hash_wq;
+    struct workqueue_struct *lookup_wq;
+    struct workqueue_struct *process_wq;
 
 	struct init_param_inram iparam_inram;
 	struct init_param_cowbtree iparam_cowbtree;
@@ -1087,6 +1077,9 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	mempool_t *dedup_work_pool = NULL;
 	mempool_t *check_work_pool = NULL;
+    mempool_t *hash_work_pool = NULL;
+    mempool_t *lookup_work_pool = NULL;
+    mempool_t *process_work_pool = NULL;
 
 	bool unformatted;
 
@@ -1119,6 +1112,27 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad_bs;
 	}
 
+    hash_wq = create_singlethread_workqueue("compute-hash");
+    if (!hash_wq) {
+        ti->error = "fail to create hash workqueue";
+        r = -ENOMEM;
+        goto bad_bs;
+    }
+
+    lookup_wq = create_singlethread_workqueue("lookup table");
+    if (!lookup_wq) {
+        ti->error = "fail to create lookup workqueue";
+        r = - ENOMEM;
+        goto bad_bs;
+    }
+
+    process_wq = create_singlethread_workqueue("process");
+    if (!process_wq) {
+        ti->error = "fail to create process workqueue";
+        r = -ENOMEM;
+        goto bad_bs;
+    }
+
 	dedup_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
 						      sizeof(struct dedup_work));
 	if (!dedup_work_pool) {
@@ -1135,6 +1149,29 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad_check_mempool;
 	}
 
+    hash_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
+                        sizeof(struct hash_work));
+    if (!hash_work) {
+        ti->error = "fail to create hash mempool";
+        r = -ENOMEM;
+        goto bad_dedup_mempool;
+    }
+
+    lookup_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
+                        sizeof(struct lookup_work));
+    if (!lookup_work_pool) {
+        ti->error = "fail to create lookup mempool";
+        r = -ENOMEM;
+        goto bad_dedup_mempool;
+    }
+
+    process_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
+                        sizeof(struct process_work));
+    if (!process_work_pool) {
+        ti->error = "fail to create process mempool";
+        r = -ENOMEM;
+        goto bad_dedup_mempool;
+    }
 
 	dc->io_client = dm_io_client_create();
 	if (IS_ERR(dc->io_client)) {
@@ -1259,34 +1296,6 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->discards_supported = true;
 	ti->num_discard_bios = 1;
 	ti->private = dc;
-
-	// --------------------------pipeline--------------------------
-
-	// 初始化bio自旋锁
-	spin_lock_init(&dc->hash_queue.lock);
-    spin_lock_init(&dc->lookup_queue.lock);
-    spin_lock_init(&dc->process_queue.lock);
-
-	// 初始化队列
-	init_queue(&(dc->hash_queue));
-	init_queue(&(dc->lookup_queue));
-	init_queue(&(dc->process_queue));
-
-    // 创建流水线阶段线程
-    // hash_thread = kthread_run(thread_hash_func, (void*)dc, "hash_thread");
-    // lookup_thread = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread");
-    // process_thread = kthread_run(thread_process_func, (void*)dc, "process_thread");
-	// hash_thread2 = kthread_run(thread_hash_func, (void*)dc, "hash_thread2");    
-	// lookup_thread2 = kthread_run(thread_lookup_func, (void*)dc, "lookup_thread2");
-	// process_thread2 = kthread_run(thread_process_func, (void*)dc, "process_thread2");
-	t1 = kthread_run(thread_handle_func, (void*)dc, "handle_thread1");
-	t2 = kthread_run(thread_handle_func, (void*)dc, "handle_thread2");
-	t3 = kthread_run(thread_handle_func, (void*)dc, "handle_thread3");
-	t4 = kthread_run(thread_handle_func, (void*)dc, "handle_thread4");
-
-	dc->task_completed = 0; // 标志两个线程完成
-	mutex_unlock(&dc->my_mutex);
-	// ------------------------pipeline end-------------------------- 
 	return 0;
 
 bad_kvstore_init:
@@ -1342,13 +1351,8 @@ static void dm_dedup_dtr(struct dm_target *ti)
 	dm_put_device(ti, dc->data_dev);
 	dm_put_device(ti, dc->metadata_dev);
 	desc_table_deinit(dc->desc_table);
-	kfree(dc);
 
-	// 停止并清理流水线阶段线程
-    kthread_stop(t1);
-    kthread_stop(t2);
-    kthread_stop(t3);
-	kthread_stop(t4);
+	kfree(dc);
 }
 
 /* Gives Dmdedup status. */
@@ -1506,465 +1510,6 @@ static int dm_dedup_message(struct dm_target *ti,
 
 	return r;
 }
-
-// ------------------------------------pipeline---------------------------------
-
-static u8* calculate_hash(struct dedup_config *dc, struct bio *bio)
-{
-    // 求hash的处理逻辑
-    // 分配hash的存储空间
-    u8* hash = kmalloc(sizeof(u8) * MAX_DIGEST_SIZE, GFP_KERNEL);
-    int r;
-	if(bio == NULL || dc->desc_table == NULL || hash == NULL)
-		return NULL;
-    compute_hash_bio(dc->desc_table, bio, hash);
-    return hash;
-}
-
-int thread_lookup_hash_pbn(void *args)
-{
-	struct ThreadArgs *thread_args = (struct ThreadArgs*) args;
-	lookup_hash_pbn(thread_args->dc, thread_args->bio, thread_args->hash,
-                    thread_args->hash2pbn_value, thread_args->lbn2pbn_value, thread_args->r);
-	return NULL;
-}
-
-static void lookup_hash_pbn(struct dedup_config *dc, struct bio *bio, u8 *hash, 
-                        struct hash_pbn_value *hash2pbn_value, 
-                        struct lbn_pbn_value *lbn2pbn_value,
-                        int *r1) 
-{
-    u64 lbn = bio_lbn(dc, bio);
-	u32 vsize;
-    r1 = dc->kvs_hash_pbn->kvs_lookup(dc->kvs_hash_pbn, hash,
-                dc->crypto_key_size,
-                &hash2pbn_value, &vsize);
-
-
-    mutex_lock(&dc->my_mutex);
-    dc->task_completed++;
-    mutex_unlock(&dc->my_mutex);
-}
-
-
-int thread_lookup_lbn_pbn(void *args)
-{
-    struct ThreadArgs *thread_args = (struct ThreadArgs *)args;
-    lookup_lbn_pbn(thread_args->dc, thread_args->bio, thread_args->hash,
-                   thread_args->hash2pbn_value, thread_args->lbn2pbn_value, thread_args->r);
-    return NULL;
-}
-
-static void lookup_lbn_pbn(struct dedup_config *dc, struct bio *bio, u8 *hash, 
-                        struct hash_pbn_value *hash2pbn_value, 
-                        struct lbn_pbn_value *lbn2pbn_value, 
-                        int *r2) 
-{
-    u64 lbn = bio_lbn(dc, bio); // bio的lbn
-	u32 vsize;
-    r2 = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
-					sizeof(lbn), (void *)&lbn2pbn_value,
-					&vsize);
-
-	mutex_lock(&dc->my_mutex);
-    dc->task_completed++;
-	mutex_unlock(&dc->my_mutex);
-}
-
-static int lookup_table(struct dedup_config *dc, struct bio *bio, u8 *hash, 
-                        struct hash_pbn_value *hash2pbn_value, 
-                        struct lbn_pbn_value *lbn2pbn_value)
-{
-    // 查表的处理逻辑
-    dc->task_completed = 0;
-    // pthread_t thread1, thread2;
-    struct task_struct *kthread1, *kthread2;
-    int r1, r2, result;
-    struct ThreadArgs args1;
-    args1.dc = dc;
-    args1.bio = bio;
-    args1.hash = hash;
-    args1.hash2pbn_value = hash2pbn_value;
-    args1.lbn2pbn_value = lbn2pbn_value;
-    args1.r = r1;
-    struct ThreadArgs args2 = args1;
-    args2.r = r2;
-
-    kthread1 = kthread_run(thread_lookup_hash_pbn, (void*)&args1, "kthread1");
-    kthread2 = kthread_run(thread_lookup_lbn_pbn, (void*)&args2, "ktrhead2");
-
-    while(1) {
-        mutex_lock(&dc->my_mutex);
-        if(dc->task_completed == 2) {
-        	kthread_stop(kthread1);
-        	kthread_stop(kthread2);
-        	kthread1 = NULL;
-        	kthread2 = NULL;
-            break;
-        }
-        mutex_unlock(&dc->my_mutex);
-    }
-	
-
-    if(r1 == -ENODATA) {
-        // hash -> pbn not found
-        if(r2 == -ENODATA) {
-            // lbn -> pbn not found
-            result = NOHASH_NOLBN;
-        }
-        else {
-            // lbn -> pbn found
-            result = NOHASH_LBN;
-        }
-    }
-    else {
-        // hash -> pbn found
-        if(r2 == -ENODATA) {
-            // lbn -> pbn not found
-            result = HASH_LBN;
-        }
-        else {
-            // lbn -> pbn found
-            result = HASH_NOLBN;
-        }
-    }
-    return result;
-}
-
-static void process_data(struct dedup_config *dc, struct process_queue_bio process_queue_bio)
-{
-    // 处理程序的逻辑
-    switch (process_queue_bio.result) {
-    case HASH_LBN:
-        __handle_has_lbn_pbn_with_hash(dc, process_queue_bio.bio, 
-                                    bio_lbn(dc, process_queue_bio.bio), 
-                                    process_queue_bio.hash2pbn_value.pbn,
-						            process_queue_bio.lbn2pbn_value);
-        dc->dupwrites++;
-		break;
-    case HASH_NOLBN:
-        __handle_no_lbn_pbn_with_hash(dc, process_queue_bio.bio,
-                                    bio_lbn(dc, process_queue_bio.bio), 
-                                    process_queue_bio.hash2pbn_value.pbn,
-						            process_queue_bio.lbn2pbn_value);
-		break;
-    case NOHASH_LBN:
-		__handle_has_lbn_pbn(dc, process_queue_bio.bio,
-                            bio_lbn(dc, process_queue_bio.bio), 
-                            process_queue_bio.hash, 
-                            process_queue_bio.lbn2pbn_value.pbn);
-        dc->dupwrites++;
-		break;
-    case NOHASH_NOLBN:
-        __handle_no_lbn_pbn(dc, process_queue_bio.bio,
-                            bio_lbn(dc, process_queue_bio.bio), 
-                            process_queue_bio.hash);
-		break;
-    }
-    kfree(process_queue_bio.hash);
-}
-
-static void add_to_hash_queue(struct bio *bio, struct dedup_config *dc)
-{
-    spin_lock(&dc->hash_queue.lock);  // 获取自旋锁
-    // 将bio添加到查表队列
-	struct hash_queue_bio *hash_queue_bio = kmalloc(sizeof(hash_queue_bio), GFP_KERNEL);
-    hash_queue_bio->bio = bio;
-	hash_queue_bio->status = 0;
-	queue_push(&(dc->hash_queue), (void*)&hash_queue_bio);
-
-    spin_unlock(&dc->hash_queue.lock);  // 释放自旋锁
-}
-
-static void add_to_lookup_queue(struct bio *bio, struct dedup_config *dc, u8* hash)
-{
-    spin_lock(&dc->lookup_queue.lock);  // 获取自旋锁
-    // 将bio添加到查表队列
-	struct lookup_queue_bio *lookup_queue_bio = kmalloc(sizeof(struct lookup_queue_bio), GFP_KERNEL);
-    lookup_queue_bio->bio = bio;
-    lookup_queue_bio->hash = hash;
-	queue_push(&(dc->hash_queue), (void*)&lookup_queue_bio);
-
-    spin_unlock(&dc->lookup_queue.lock);  // 释放自旋锁
-}
-
-static void add_to_process_queue(struct bio *bio, struct dedup_config *dc,
-								int result, 
-                                struct hash_pbn_value hash2pbn_value, 
-                                struct lbn_pbn_value lbn2pbn_value)
-{
-    spin_lock(&dc->process_queue.lock);  // 获取自旋锁
-
-    // 将bio添加到处理程序队列
-	struct process_queue_bio *process_queue_bio = kmalloc(sizeof(struct process_queue_bio), GFP_KERNEL);
-    process_queue_bio->bio = bio;
-    process_queue_bio->result = result;
-    process_queue_bio->hash2pbn_value = hash2pbn_value;
-    process_queue_bio->lbn2pbn_value = lbn2pbn_value;
-	queue_push(&(dc->hash_queue), (void*)&process_queue_bio);
-
-    spin_unlock(&dc->process_queue.lock);  // 释放自旋锁
-}
-
-static struct hash_queue_bio *get_next_bio_from_hash_queue(struct dedup_config *dc)
-{
-    struct hash_queue_bio *hash_queue_bio = NULL;
-	struct bio_queue *hash_queue = &dc->hash_queue;
-
-    spin_lock(&hash_queue->lock);  // 获取自旋锁
-
-    if (!queue_is_empty(&(dc->hash_queue))) {
-        // 从队列中获取下一个bio请求
-        void *pop = queue_pop(&(dc->hash_queue));
-		hash_queue_bio = (struct hash_queue_bio*)pop;
-    }
-
-    spin_unlock(&hash_queue->lock);  // 释放自旋锁
-
-    return hash_queue_bio;
-}
-
-static struct lookup_queue_bio *get_next_bio_from_lookup_queue(struct dedup_config *dc)
-{
-    struct lookup_queue_bio *lookup_queue_bio = NULL;
-	struct bio_queue *lookup_queue = &dc->lookup_queue;
-
-    spin_lock(&lookup_queue->lock);  // 获取自旋锁
-
-    if (!queue_is_empty(&(dc->lookup_queue))) {
-        // 从队列中获取下一个bio请求
-        void *pop = queue_pop(&(dc->lookup_queue));
-		lookup_queue_bio = (struct lookup_queue_bio*)pop;
-    }
-
-    spin_unlock(&lookup_queue->lock);  // 释放自旋锁
-
-    return lookup_queue_bio;
-}
-
-static struct process_queue_bio *get_next_bio_from_process_queue(struct dedup_config *dc)
-{
-    struct process_queue_bio *process_queue_bio = NULL;
-	struct bio_queue *process_queue = &dc->process_queue;
-
-    spin_lock(&process_queue->lock);  // 获取自旋锁
-
-    if (!queue_is_empty(&(dc->process_queue))) {
-        // 从队列中获取下一个bio请求
-        void *pop = queue_pop(&(dc->process_queue));
-		process_queue_bio = (struct process_queue_bio*)pop;
-    }
-
-    spin_unlock(&process_queue->lock);  // 释放自旋锁
-
-    return process_queue_bio;
-}
-
-static int my_handle(struct dedup_config *dc, struct bio *bio) {
-	u64 lbn;
-	u8 hash[MAX_DIGEST_SIZE];
-	struct hash_pbn_value hashpbn_value;
-	u32 vsize;
-	struct bio *new_bio = NULL;
-	int r;
-	lbn = bio_lbn(dc, bio);
-
-	r = compute_hash_bio(dc->desc_table, bio, hash);
-	if (r)
-		return r;
-
-	r = dc->kvs_hash_pbn->kvs_lookup(dc->kvs_hash_pbn, hash,
-					 dc->crypto_key_size,
-					 &hashpbn_value, &vsize);
-
-	if (r == -ENODATA)
-		r = handle_write_no_hash(dc, bio, lbn, hash);
-	else if (r == 0)
-		r = handle_write_with_hash(dc, bio, lbn, hash,
-					   hashpbn_value);
-
-	if (r < 0)
-		return r;
-
-	dc->writes_after_flush++;
-	if ((dc->flushrq && dc->writes_after_flush >= dc->flushrq) ||
-	    (bio->bi_opf & (REQ_PREFLUSH | REQ_FUA))) {
-		r = dc->mdops->flush_meta(dc->bmd);
-		if (r < 0)
-			return r;
-		dc->writes_after_flush = 0;
-	}
-	return 0;
-}
-
-static int thread_handle_func(void *data) {
-	struct dedup_config *dc = (struct dedup_config *)data;
-	return handle_func(dc);
-}
-
-static int handle_func(struct dedup_config *dc) {
-	while(true) {
-		struct hash_queue_bio *hash_queue_bio = get_next_bio_from_hash_queue(dc);
-
-		if(hash_queue_bio) {
-			my_handle(dc, hash_queue_bio->bio);
-		}
-		else {
-			cond_resched();
-		}
-	}
-}
-
-static int thread_hash_func(void *data)
-{
-    struct dedup_config *dc = (struct dedup_config *)data;
-    return hash_func(dc);
-}
-
-static int hash_func(struct dedup_config *dc)
-{
-    while (true) {
-        struct hash_queue_bio *hash_queue_bio = get_next_bio_from_hash_queue(dc);
-
-        if (hash_queue_bio) {
-            // 求hash的处理逻辑
-            u8 *hash;
-            hash = calculate_hash(dc, hash_queue_bio->bio);
-			if(hash == NULL) return 0;
-            // 将bio传递给下一个阶段
-            add_to_lookup_queue(hash_queue_bio->bio, dc, hash);
-
-			// 释放内存
-			kfree(hash_queue_bio);
-        }
-		// else {
-		// 	cond_resched();
-		// }
-    }
-
-    return 0;
-}
-
-static int thread_lookup_func(void *data)
-{
-    struct dedup_config *dc = (struct dedup_config *)data;
-    return lookup_func(dc);
-}
-
-static int lookup_func(struct dedup_config *dc)
-{
-    while (true) {
-        struct lookup_queue_bio *lookup_queue_bio = get_next_bio_from_lookup_queue(dc);
-        if (lookup_queue_bio) {
-            // 查表的处理逻辑
-            int result;
-            struct hash_pbn_value hash2pbn_value;
-            struct lbn_pbn_value lbn2pbn_value;
-            result = lookup_table(dc, lookup_queue_bio->bio, lookup_queue_bio->hash, 
-                                &hash2pbn_value, &lbn2pbn_value);
-
-            // 将bio传递给下一个阶段
-            add_to_process_queue(lookup_queue_bio->bio, dc, result, hash2pbn_value, lbn2pbn_value);
-
-			// 释放内存
-			kfree(lookup_queue_bio);
-        }
-		// else {
-		// 	cond_resched();
-		// }
-    }
-
-    return 0;
-}
-
-static int thread_process_func(void *data)
-{
-    struct dedup_config *dc = (struct dedup_config *)data;
-    return process_func(dc);
-}
-
-static int process_func(struct dedup_config *dc)
-{
-    while (true) {
-        // struct bio *bio = get_next_bio(&process_queue);
-        struct process_queue_bio *process_queue_bio = get_next_bio_from_process_queue(dc);
-
-        if (process_queue_bio) {
-            // 处理程序的逻辑
-            process_data(dc, *process_queue_bio);
-
-			// flush
-			dc->writes_after_flush++;
-			if ((dc->flushrq && dc->writes_after_flush >= dc->flushrq) ||
-			(process_queue_bio->bio->bi_opf & (REQ_PREFLUSH | REQ_FUA))) {
-			int r = dc->mdops->flush_meta(dc->bmd);
-			if (r < 0) {
-				handle_error(r, process_queue_bio->bio);
-			}
-				dc->writes_after_flush = 0;
-			}
-			
-			// 释放内存
-			kfree(process_queue_bio);
-        }
-		// else {
-		// 	cond_resched();
-		// }
-    }
-
-    return 0;
-}
-
-static void handle_error(int r, struct bio *bio) {
-	switch (r) {
-	case -EWOULDBLOCK:
-		bio->bi_status = BLK_STS_AGAIN;
-		break;
-	case -EINVAL:
-	case -EIO:
-		bio->bi_status = BLK_STS_IOERR;
-		break;
-	case -ENODATA:
-		bio->bi_status = BLK_STS_MEDIUM;
-		break;
-	case -ENOMEM:
-		bio->bi_status = BLK_STS_RESOURCE;
-		break;
-	case -EPERM:
-		bio->bi_status = BLK_STS_PROTECTION;
-		break;
-	}
-	bio_endio(bio);
-}
-
-void init_queue(struct bio_queue *bio_queue) {
-	bio_queue->front = 0;
-	bio_queue->rear = 0;
-}
-
-bool queue_is_empty(struct bio_queue *bio_queue) {
-	return (bio_queue->front == bio_queue->rear);
-}
-
-void queue_push(struct bio_queue *bio_queue, void *ptr) {
-	bio_queue->data[bio_queue->rear] = ptr;
-	bio_queue->rear = (bio_queue->rear + 1) % MAX_QUEUE_SIZE;
-}
-
-void* queue_pop(struct bio_queue *bio_queue) {
-	if(!queue_is_empty(bio_queue)) {
-		void *ret;
-		ret = bio_queue->data[bio_queue->front];
-		bio_queue->front = (bio_queue->front + 1) % MAX_QUEUE_SIZE;
-		return ret;
-	}
-	else {
-		return NULL;
-	}
-}
-
-// ----------------------------------pipeline end--------------------------------
-
 
 static struct target_type dm_dedup_target = {
 	.name = "dedup",
