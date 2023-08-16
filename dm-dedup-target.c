@@ -55,7 +55,7 @@ struct hash_work {
     struct dedup_config *config;
     struct bio *bio;
     int status;
-}
+};
 
 struct lookup_work {
     struct work_struct worker;
@@ -63,7 +63,7 @@ struct lookup_work {
     struct bio *bio;
     int status;
     u8 *hash;
-}
+};
 
 struct process_work {
     struct work_struct worker;
@@ -72,7 +72,9 @@ struct process_work {
     int status;
     u8 *hash;
     int result;
-}
+    struct hash_pbn_value hashpbn_value;
+    struct lbn_pbn_value lbnpbn_value;
+};
 
 enum backend {
 	BKND_INRAM,
@@ -555,6 +557,155 @@ static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
 	return r;
 }
 
+static void do_process_work(struct work_struct *ws) {
+    struct process_work *process_work = container_of(ws, struct process_work, worker);
+    struct dedup_config *dc = (struct dedup_config*)process_work->config;
+    struct bio *bio = (struct bio*)process_work->bio;
+    int status = (int)process_work->status;
+    u8 *hash = (u8 *)process_work->hash;
+    int result = (int)process_work->result;
+    struct hash_pbn_value hashpbn_value = (struct hash_pbn_value)process_work->hashpbn_value;
+    struct lbn_pbn_value lbnpbn_value = (struct lbn_pbn_value)process_work->lbnpbn_value;
+
+    switch (result) {
+    case HASH_LBN:
+        __handle_has_lbn_pbn_with_hash(dc, bio, 
+                                    bio_lbn(dc, bio), 
+                                    hashpbn_value,
+						            lbn2pbn_value);
+        dc->dupwrites++;
+		break;
+    case HASH_NOLBN:
+        __handle_no_lbn_pbn_with_hash(dc, bio,
+                                    bio_lbn(dc, bio), 
+                                    hashpbn_value,
+						            lbnpbn_value);
+		break;
+    case NOHASH_LBN:
+		__handle_has_lbn_pbn(dc, bio,
+                            bio_lbn(dc, bio), 
+                            hashpbn_value, 
+                            lbnpbn_value);
+        dc->dupwrites++;
+		break;
+    case NOHASH_NOLBN:
+        __handle_no_lbn_pbn(dc, bio,
+                            bio_lbn(dc, bio), 
+                            hash);
+		break;
+    }
+    kfree(process_queue_bio.hash);
+
+}
+
+static void do_lookup_work(struct work_struct *ws) {
+    struct lookup_work *lookup_work = container_of(ws, struct lookup_work, worker);
+    struct dedup_config *dc = (struct dedup_config*)lookup_work->config;
+    struct bio *bio = (struct bio*)lookup_work->bio;
+    int status = (int)lookup_work->status;
+    u8 *hash = (u8 *)lookup_work->hash;
+
+    mempool_free(lookup_work, dc->hash_work_pool);
+
+    // lookup table
+    int r1, r2, result;
+	struct hash_pbn_value hashpbn_value;
+	struct lbn_pbn_value lbnpbn_value;
+    u32 vsize;
+    u64 lbn;
+	lbn = bio_lbn(dc, bio);
+
+	r1 = dc->kvs_hash_pbn->kvs_lookup(dc->kvs_hash_pbn, hash,
+					 dc->crypto_key_size,
+					 &hashpbn_value, &vsize);
+
+	r2 = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
+					sizeof(lbn), (void *)&lbnpbn_value,
+					&vsize);
+
+    if(r1 == -ENODATA) {
+        // hash -> pbn not found
+        if(r2 == -ENODATA) {
+            // lbn -> pbn not found
+            result = NOHASH_NOLBN;
+        }
+        else {
+            // lbn -> pbn found
+            result = NOHASH_LBN;
+        }
+    }
+    else {
+        // hash -> pbn found
+        if(r2 == -ENODATA) {
+            // lbn -> pbn not found
+            result = HASH_LBN;
+        }
+        else {
+            // lbn -> pbn found
+            result = HASH_NOLBN;
+        }
+    }
+    // enqueue
+    struct process_work *process_work;
+    process_work = mempool_alloc(dc->process_work_pool, GFP_NOIO);
+	if (!lookup_work) {
+		bio->bi_status = BLK_STS_RESOURCE;
+		bio_endio(bio);
+		return;
+	}
+    process_work->bio = bio;
+    process_work->dc = dc;
+    process_work->status = status;
+    process_work->hash = hash;
+    process_work->result = result;
+    process_work->hashpbn_value = hashpbn_value;
+    process_work->lbnpbn_value = lbnpbn_value;
+
+    INIT_WORK(&(process_work->worker), do_process_work);
+
+    queue_work(dc->process_workqueue, &(process_work->worker));
+}
+
+static void do_hash_work(struct work_struct *ws) {
+    struct hash_work *hash_work = container_of(ws, struct hash_work, worker);
+    struct dedup_config *dc = (struct dedup_config*)hash_work->config;
+    struct bio *bio = (struct bio*)hash_work->bio;
+    int status = (int)hash_work->status;
+
+    mempool_free(data, dc->hash_work_pool);
+
+    // compute hash
+    u8 *hash;
+    int r;
+    hash = kmalloc(sizeof(u8) * MAX_DIGEST_SIZE, GFP_NOIO);
+    if (!hash) {
+        bi->bi_status = BLK_STS_RESOURCE;
+        bio_endio(bio);
+        return;
+    }
+    r = compute_hash_bio(dc->desc_table, bio, hash);
+    if (r) {
+        return;
+    }
+
+    // enqueue
+    struct lookup_work *lookup_work;
+    lookup_work = mempool_alloc(dc->lookup_work_pool, GFP_NOIO);
+	if (!lookup_work) {
+		bio->bi_status = BLK_STS_RESOURCE;
+		bio_endio(bio);
+		return;
+	}
+    lookup_work->bio = bio;
+    lookup_work->config = dc;
+    lookup_work->status = status;
+    lookup_work->hash = hash;
+
+    INIT_WORK(&(lookup_work->worker), do_lookup_work);
+
+    queue_work(dc->lookup_workqueue, &(lookup_work->worker));
+}
+
 /*
  * Performs a lookup for Hash->PBN entry.
  * If entry is not found, it invokes handle_write_no_hash.
@@ -589,22 +740,38 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 
 	lbn = bio_lbn(dc, bio);
 
-	r = compute_hash_bio(dc->desc_table, bio, hash);
-	if (r)
-		return r;
+    struct hash_work *data;
+    data = mempool_alloc(dc->hash_work_pool, GFP_NOIO);
+    if (!data) {
+        bio->bi_status = BLK_STS_RESOURCE;
+        bio_endio(bio);
+        return -1;
+    }
+    
+    data->bio = bio;
+    data->config = dc;
+    data->status = 0;
+    
+    INIT_WORK(&(data->worker), compute_work);
 
-	r = dc->kvs_hash_pbn->kvs_lookup(dc->kvs_hash_pbn, hash,
-					 dc->crypto_key_size,
-					 &hashpbn_value, &vsize);
+    queue_work(dc->hash_workqueue, &(data->worker));
 
-	if (r == -ENODATA)
-		r = handle_write_no_hash(dc, bio, lbn, hash);
-	else if (r == 0)
-		r = handle_write_with_hash(dc, bio, lbn, hash,
-					   hashpbn_value);
-
-	if (r < 0)
-		return r;
+	/* r = compute_hash_bio(dc->desc_table, bio, hash); */
+	/* if (r) */
+	/* 	return r; */
+	/**/
+	/* r = dc->kvs_hash_pbn->kvs_lookup(dc->kvs_hash_pbn, hash, */
+	/* 				 dc->crypto_key_size, */
+	/* 				 &hashpbn_value, &vsize); */
+	/**/
+	/* if (r == -ENODATA) */
+	/* 	r = handle_write_no_hash(dc, bio, lbn, hash); */
+	/* else if (r == 0) */
+	/* 	r = handle_write_with_hash(dc, bio, lbn, hash, */
+	/* 				   hashpbn_value); */
+	/**/
+	/* if (r < 0) */
+	/* 	return r; */
 
 	dc->writes_after_flush++;
 	if ((dc->flushrq && dc->writes_after_flush >= dc->flushrq) ||
@@ -1261,6 +1428,9 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	dc->metadata_dev = da.meta_dev;
 
 	dc->workqueue = wq;
+    dc->hash_workqueue = hash_wq;
+    dc->lookup_workqueue = lookup_wq;
+    dc->process_workqueue = process_wq;
 	dc->dedup_work_pool = dedup_work_pool;
 	dc->check_work_pool = check_work_pool;
 	dc->bmd = md;
