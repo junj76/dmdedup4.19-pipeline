@@ -564,6 +564,9 @@ static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
 
 static void do_process_work(struct work_struct *ws) {
     struct process_work *process_work = container_of(ws, struct process_work, worker);
+    if (!process_work) {
+        return;
+    }
     struct dedup_config *dc = (struct dedup_config*)process_work->config;
     struct bio *bio = (struct bio*)process_work->bio;
     int status = (int)process_work->status;
@@ -607,6 +610,9 @@ static void do_process_work(struct work_struct *ws) {
 
 static void do_lookup_work(struct work_struct *ws) {
     struct lookup_work *lookup_work = container_of(ws, struct lookup_work, worker);
+    if (!lookup_work) {
+        return;
+    }
     struct dedup_config *dc = (struct dedup_config*)lookup_work->config;
     struct bio *bio = (struct bio*)lookup_work->bio;
     int status = (int)lookup_work->status;
@@ -674,6 +680,9 @@ static void do_lookup_work(struct work_struct *ws) {
 
 static void do_hash_work(struct work_struct *ws) {
     struct hash_work *hash_work = container_of(ws, struct hash_work, worker);
+    if (!hash_work) {
+        return;
+    }
     struct dedup_config *dc = (struct dedup_config*)hash_work->config;
     struct bio *bio = (struct bio*)hash_work->bio;
     int status = (int)hash_work->status;
@@ -901,6 +910,9 @@ static void process_bio(struct dedup_config *dc, struct bio *bio)
 static void do_work(struct work_struct *ws)
 {
 	struct dedup_work *data = container_of(ws, struct dedup_work, worker);
+    if (!data) {
+        return;
+    }
 	struct dedup_config *dc = (struct dedup_config *)data->config;
 	struct bio *bio = (struct bio *)data->bio;
 
