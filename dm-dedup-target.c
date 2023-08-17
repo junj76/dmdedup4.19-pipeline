@@ -572,6 +572,8 @@ static void do_process_work(struct work_struct *ws) {
     struct hash_pbn_value hashpbn_value = (struct hash_pbn_value)process_work->hashpbn_value;
     struct lbn_pbn_value lbnpbn_value = (struct lbn_pbn_value)process_work->lbnpbn_value;
 
+    mempool_free(process_work, dc->process_work_pool);
+
     switch (result) {
     case HASH_LBN:
         __handle_has_lbn_pbn_with_hash(dc, bio, 
@@ -687,9 +689,6 @@ static void do_hash_work(struct work_struct *ws) {
         return;
     }
     r = compute_hash_bio(dc->desc_table, bio, hash);
-    if (r) {
-        return;
-    }
 
     // enqueue
     struct lookup_work *lookup_work;
@@ -742,17 +741,17 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 
 	lbn = bio_lbn(dc, bio);
 
-    struct hash_work *data;
-    data = mempool_alloc(dc->hash_work_pool, GFP_NOIO);
-    if (!data) {
+    struct hash_work *hash_work;
+    hash_work = mempool_alloc(dc->hash_work_pool, GFP_NOIO);
+    if (!hash_work) {
         bio->bi_status = BLK_STS_RESOURCE;
         bio_endio(bio);
         return -1;
     }
     
-    data->bio = bio;
-    data->config = dc;
-    data->status = 0;
+    hash_work->bio = bio;
+    hash_work->config = dc;
+    hash_work->status = 0;
     
     INIT_WORK(&(data->worker), do_hash_work);
 
