@@ -677,7 +677,7 @@ static void do_hash_work(struct work_struct *ws) {
     struct bio *bio = (struct bio*)hash_work->bio;
     int status = (int)hash_work->status;
 
-    mempool_free(data, dc->hash_work_pool);
+    mempool_free(hash_work, dc->hash_work_pool);
 
     // compute hash
     u8 *hash;
