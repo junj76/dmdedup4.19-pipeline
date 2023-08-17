@@ -753,9 +753,9 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
     hash_work->config = dc;
     hash_work->status = 0;
     
-    INIT_WORK(&(data->worker), do_hash_work);
+    INIT_WORK(&(hash_work->worker), do_hash_work);
 
-    queue_work(dc->hash_workqueue, &(data->worker));
+    queue_work(dc->hash_workqueue, &(hash_work->worker));
 
 	return 0;
 }
