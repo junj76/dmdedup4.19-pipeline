@@ -727,47 +727,6 @@ static void do_hash_work(struct work_struct *ws) {
  */
 static int handle_write(struct dedup_config *dc, struct bio *bio)
 {
-	/* u64 lbn; */
-	/* struct hash_pbn_value hashpbn_value; */
-	/* u32 vsize; */
-	/* struct bio *new_bio = NULL; */
-	/* int r; */
-	/**/
-	/* /* If there is a data corruption make the device read-only */ */
-	/* if (dc->corrupted_blocks > dc->fec_fixed) */
-	/* 	return -EIO; */
-	/**/
-	/* dc->writes++; */
-	/**/
-	/* /* Read-on-write handling */ */
-	/* if (bio->bi_iter.bi_size < dc->block_size) { */
-	/* 	dc->reads_on_writes++; */
-	/* 	new_bio = prepare_bio_on_write(dc, bio); */
-	/* 	if (!new_bio || IS_ERR(new_bio)) */
-	/* 		return -ENOMEM; */
-	/* 	bio = new_bio; */
-	/* } */
-	/**/
-	/* lbn = bio_lbn(dc, bio); */
-	/**/
-	/*    struct hash_work *hash_work; */
-	/*    hash_work = mempool_alloc(dc->hash_work_pool, GFP_NOIO); */
-	/*    if (!hash_work) { */
-	/*        bio->bi_status = BLK_STS_RESOURCE; */
-	/*        bio_endio(bio); */
-	/*        return -1; */
-	/*    } */
-	/**/
-	/*    hash_work->bio = bio; */
-	/*    hash_work->config = dc; */
-	/*    hash_work->status = 0; */
-	/**/
-	/*    INIT_WORK(&(hash_work->worker), do_hash_work); */
-	/**/
-	/*    queue_work(dc->hash_workqueue, &(hash_work->worker)); */
-	/**/
-	/* return 0; */
-
 	u64 lbn;
 	u8 hash[MAX_DIGEST_SIZE];
 	struct hash_pbn_value hashpbn_value;
