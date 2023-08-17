@@ -651,9 +651,8 @@ static void do_lookup_work(struct work_struct *ws) {
         }
     }
     // enqueue
-    struct process_work *process_work;
-    process_work = mempool_alloc(dc->process_work_pool, GFP_NOIO);
-	if (!lookup_work) {
+    struct process_work *process_work; process_work = mempool_alloc(dc->process_work_pool, GFP_NOIO); 
+    if (!lookup_work) {
 		bio->bi_status = BLK_STS_RESOURCE;
 		bio_endio(bio);
 		return;
@@ -679,7 +678,6 @@ static void do_hash_work(struct work_struct *ws) {
 
     mempool_free(hash_work, dc->hash_work_pool);
 
-    // compute hash
     u8 *hash;
     int r;
     hash = kmalloc(sizeof(u8) * MAX_DIGEST_SIZE, GFP_NOIO);
