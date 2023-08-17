@@ -751,22 +751,6 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 
 	lbn = bio_lbn(dc, bio);
 
-    struct hash_work *data;
-    data = mempool_alloc(dc->hash_work_pool, GFP_NOIO);
-    if (!data) {
-        bio->bi_status = BLK_STS_RESOURCE;
-        bio_endio(bio);
-        return -1;
-    }
-    
-    data->bio = bio;
-    data->config = dc;
-    data->status = 0;
-    
-    INIT_WORK(&(data->worker), compute_work);
-
-    queue_work(dc->hash_workqueue, &(data->worker));
-
 	r = compute_hash_bio(dc->desc_table, bio, hash);
 	if (r)
 		return r;
