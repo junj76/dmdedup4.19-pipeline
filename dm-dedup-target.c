@@ -601,14 +601,6 @@ static void do_process_work(struct work_struct *ws) {
     }
     kfree(hash);
 
-	dc->writes_after_flush++;
-	if ((dc->flushrq && dc->writes_after_flush >= dc->flushrq) ||
-	    (bio->bi_opf & (REQ_PREFLUSH | REQ_FUA))) {
-		r = dc->mdops->flush_meta(dc->bmd);
-		if (r < 0)
-			return r;
-		dc->writes_after_flush = 0;
-	}
 }
 
 static void do_lookup_work(struct work_struct *ws) {
