@@ -615,7 +615,7 @@ static void do_lookup_work(struct work_struct *ws) {
     mempool_free(lookup_work, dc->hash_work_pool);
 
     // lookup table
-    int r1, r2, result;
+    int r1, r2, result = NOHASH_NOLBN;
 	struct hash_pbn_value hashpbn_value;
 	struct lbn_pbn_value lbnpbn_value;
     u32 vsize;
