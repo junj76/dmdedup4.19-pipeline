@@ -599,7 +599,7 @@ static void do_process_work(struct work_struct *ws) {
                             hash);
 		break;
     }
-    kfree(process_queue_bio.hash);
+    kfree(hash);
 
 }
 
@@ -659,7 +659,7 @@ static void do_lookup_work(struct work_struct *ws) {
 		return;
 	}
     process_work->bio = bio;
-    process_work->dc = dc;
+    process_work->config = dc;
     process_work->status = status;
     process_work->hash = hash;
     process_work->result = result;
@@ -684,7 +684,7 @@ static void do_hash_work(struct work_struct *ws) {
     int r;
     hash = kmalloc(sizeof(u8) * MAX_DIGEST_SIZE, GFP_NOIO);
     if (!hash) {
-        bi->bi_status = BLK_STS_RESOURCE;
+        bio->bi_status = BLK_STS_RESOURCE;
         bio_endio(bio);
         return;
     }
@@ -757,7 +757,7 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
     data->config = dc;
     data->status = 0;
     
-    INIT_WORK(&(data->worker), compute_work);
+    INIT_WORK(&(data->worker), do_hash_work);
 
     queue_work(dc->hash_workqueue, &(data->worker));
 
@@ -1323,7 +1323,7 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
     hash_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
                         sizeof(struct hash_work));
-    if (!hash_work) {
+    if (!hash_work_pool) {
         ti->error = "fail to create hash mempool";
         r = -ENOMEM;
         goto bad_dedup_mempool;
