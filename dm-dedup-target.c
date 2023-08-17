@@ -576,21 +576,21 @@ static void do_process_work(struct work_struct *ws) {
     case HASH_LBN:
         __handle_has_lbn_pbn_with_hash(dc, bio, 
                                     bio_lbn(dc, bio), 
-                                    hashpbn_value,
-						            lbn2pbn_value);
+                                    hashpbn_value.pbn,
+						            lbnpbn_value);
         dc->dupwrites++;
 		break;
     case HASH_NOLBN:
         __handle_no_lbn_pbn_with_hash(dc, bio,
                                     bio_lbn(dc, bio), 
-                                    hashpbn_value,
+                                    hashpbn_value.pbn,
 						            lbnpbn_value);
 		break;
     case NOHASH_LBN:
 		__handle_has_lbn_pbn(dc, bio,
                             bio_lbn(dc, bio), 
-                            hashpbn_value, 
-                            lbnpbn_value);
+                            hash, 
+                            lbnpbn_value.pbn);
         dc->dupwrites++;
 		break;
     case NOHASH_NOLBN:
