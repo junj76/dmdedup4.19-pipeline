@@ -604,6 +604,8 @@ static void do_process_work(struct work_struct *ws) {
                             hash);
 		break;
     }
+    if (!access_ok(VERIFY_READ, hash, sizeof(u8) * MAX_DIGEST_SIZE));
+        return;
     kfree(hash);
 
 }
@@ -760,9 +762,9 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
     hash_work->config = dc;
     hash_work->status = 0;
     
-    INIT_WORK(&(hash_work->worker), do_hash_work);
-
-    queue_work(dc->hash_workqueue, &(hash_work->worker));
+    /* INIT_WORK(&(hash_work->worker), do_hash_work); */
+    /**/
+    /* queue_work(dc->hash_workqueue, &(hash_work->worker)); */
 
 	return 0;
 }
