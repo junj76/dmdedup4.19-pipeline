@@ -35,6 +35,11 @@
 #define MIN_DATA_DEV_BLOCK_SIZE (4 * 1024)
 #define MAX_DATA_DEV_BLOCK_SIZE (1024 * 1024)
 
+#define HASH_LBN 0
+#define HASH_NOLBN 1
+#define NOHASH_LBN 3
+#define NOHASH_NOLBN 4
+
 struct on_disk_stats {
 	u64 physical_block_counter;
 	u64 logical_block_counter;
