@@ -601,6 +601,14 @@ static void do_process_work(struct work_struct *ws) {
     }
     kfree(hash);
 
+	dc->writes_after_flush++;
+	if ((dc->flushrq && dc->writes_after_flush >= dc->flushrq) ||
+	    (bio->bi_opf & (REQ_PREFLUSH | REQ_FUA))) {
+		r = dc->mdops->flush_meta(dc->bmd);
+		if (r < 0)
+			return r;
+		dc->writes_after_flush = 0;
+	}
 }
 
 static void do_lookup_work(struct work_struct *ws) {
@@ -720,7 +728,6 @@ static void do_hash_work(struct work_struct *ws) {
 static int handle_write(struct dedup_config *dc, struct bio *bio)
 {
 	u64 lbn;
-	u8 hash[MAX_DIGEST_SIZE];
 	struct hash_pbn_value hashpbn_value;
 	u32 vsize;
 	struct bio *new_bio = NULL;
@@ -758,32 +765,6 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
     INIT_WORK(&(data->worker), do_hash_work);
 
     queue_work(dc->hash_workqueue, &(data->worker));
-
-	/* r = compute_hash_bio(dc->desc_table, bio, hash); */
-	/* if (r) */
-	/* 	return r; */
-	/**/
-	/* r = dc->kvs_hash_pbn->kvs_lookup(dc->kvs_hash_pbn, hash, */
-	/* 				 dc->crypto_key_size, */
-	/* 				 &hashpbn_value, &vsize); */
-	/**/
-	/* if (r == -ENODATA) */
-	/* 	r = handle_write_no_hash(dc, bio, lbn, hash); */
-	/* else if (r == 0) */
-	/* 	r = handle_write_with_hash(dc, bio, lbn, hash, */
-	/* 				   hashpbn_value); */
-	/**/
-	/* if (r < 0) */
-	/* 	return r; */
-
-	dc->writes_after_flush++;
-	if ((dc->flushrq && dc->writes_after_flush >= dc->flushrq) ||
-	    (bio->bi_opf & (REQ_PREFLUSH | REQ_FUA))) {
-		r = dc->mdops->flush_meta(dc->bmd);
-		if (r < 0)
-			return r;
-		dc->writes_after_flush = 0;
-	}
 
 	return 0;
 }
