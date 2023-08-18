@@ -59,6 +59,7 @@ __attribute__((section("__versions"))) = {
 	{ 0x43ce54fb, "dm_set_target_max_io_len" },
 	{ 0xe0875eb1, "kstrtobool" },
 	{ 0x4f477261, "dm_bm_checksum" },
+	{ 0x3812050a, "_raw_spin_unlock_irqrestore" },
 	{ 0x702ee75, "current_task" },
 	{ 0x7c32d0f0, "printk" },
 	{ 0x449ad0a7, "memcmp" },
@@ -98,6 +99,7 @@ __attribute__((section("__versions"))) = {
 	{ 0xcbd4898c, "fortify_panic" },
 	{ 0x6bd74783, "kmem_cache_alloc_trace" },
 	{ 0x74b55fe, "mempool_free" },
+	{ 0x51760917, "_raw_spin_lock_irqsave" },
 	{ 0x4302d0eb, "free_pages" },
 	{ 0x54f69d, "dm_tm_pre_commit" },
 	{ 0x601f665f, "dm_io_client_create" },
@@ -122,4 +124,4 @@ __attribute__((section(".modinfo"))) =
 "depends=dm-persistent-data";
 
 
-MODULE_INFO(srcversion, "96F1D0997CDC9FD50242E95");
+MODULE_INFO(srcversion, "283103B6C340D9E90A4EE43");

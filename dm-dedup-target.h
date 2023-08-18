@@ -66,6 +66,8 @@ struct dedup_config {
     struct workqueue_struct *lookup_workqueue;
     struct workqueue_struct *process_workqueue;
 
+    spinlock_t my_lock;
+
 	struct bio_set bs;
 	struct hash_desc_table *desc_table;
 

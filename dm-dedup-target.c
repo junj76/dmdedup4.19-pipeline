@@ -19,6 +19,8 @@
 #include <linux/vmalloc.h>
 #include <linux/kdev_t.h>
 
+#include <linux/spinlock.h>
+
 #include "dm-dedup-target.h"
 #include "dm-dedup-rw.h"
 #include "dm-dedup-hash.h"
@@ -39,6 +41,8 @@
 #define HASH_NOLBN 1
 #define NOHASH_LBN 3
 #define NOHASH_NOLBN 4
+
+static spinlock_t my_lock;
 
 struct on_disk_stats {
 	u64 physical_block_counter;
@@ -563,7 +567,10 @@ static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
 }
 
 static void do_process_work(struct work_struct *ws) {
+    unsigned long flags;
+    spin_lock_irqsave(&my_lock, flags);
     struct process_work *process_work = container_of(ws, struct process_work, worker);
+    spin_unlock_irqrestore(&my_lock, flags);
     struct dedup_config *dc = (struct dedup_config*)process_work->config;
     struct bio *bio = (struct bio*)process_work->bio;
     int status = (int)process_work->status;
@@ -1270,7 +1277,9 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
         goto bad_bs;
     }
 
-    process_wq = create_singlethread_workqueue("process");
+    spin_lock_init(&my_lock);
+    /* process_wq = create_singlethread_workqueue("process"); */
+    process_wq = alloc_workqueue("process", WQ_UNBOUND, 2);
     if (!process_wq) {
         ti->error = "fail to create process workqueue";
         r = -ENOMEM;
