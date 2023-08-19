@@ -358,7 +358,7 @@ static void do_inc_ref(struct work_struct *ws) {
     u64 pbn = (u64)inc_work->pbn;
     struct dedup_config *dc = (struct dedup_config *)inc_work->dc;
     mempool_free(inc_work, dc->inc_work_pool);
-    /* dc->mdops->inc_refcount(dc->bmd, pbn); */
+    dc->mdops->inc_refcount(dc->bmd, pbn);
 }
 
 static void inc_ref(struct dedup_config *dc, u64 pbn) {
@@ -430,8 +430,6 @@ static int __handle_has_lbn_pbn(struct dedup_config *dc,
     hash_ins(dc, hash, hashpbn_value);
 
     inc_ref(dc, pbn_new);
-
-    dec_ref(dc, pbn_old);
 
 	dc->logical_block_counter--;
 	dc->overwrites++;
@@ -1278,7 +1276,7 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
     /* hash_wq = create_singlethread_workqueue("compute-hash"); */
-    hash_wq = alloc_workqueue("hash", WQ_UNBOUND, 8);
+    hash_wq = alloc_workqueue("hash", WQ_UNBOUND, 2);
     if (!hash_wq) {
         ti->error = "fail to create hash workqueue";
         r = -ENOMEM;
@@ -1286,7 +1284,7 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
     }
 
     /* lookup_wq = create_singlethread_workqueue("lookup table"); */
-    lookup_wq = alloc_workqueue("lookup", WQ_UNBOUND, 8);
+    lookup_wq = alloc_workqueue("lookup", WQ_UNBOUND, 2);
     if (!lookup_wq) {
         ti->error = "fail to create lookup workqueue";
         r = - ENOMEM;
@@ -1304,23 +1302,23 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
         goto bad_bs;
     }
 
-    inc_wq = alloc_workqueue("inc", WQ_UNBOUND, 8);
+    inc_wq = alloc_workqueue("inc", WQ_UNBOUND | WQ_HIGHPRI, 16);
     if (!inc_wq) {
         ti->error = "fail to create inc workqueue";
         r = -ENOMEM;
         goto bad_bs;
     }
 
-    dec_wq = alloc_workqueue("dec", WQ_UNBOUND, 4);
+    dec_wq = alloc_workqueue("dec", WQ_UNBOUND, 1);
     if (!dec_wq) {
         ti->error = "fail to create dec workqueue";
         r = -ENOMEM;
         goto bad_bs;
     }
 
-    hash_ins_wq = alloc_workqueue("hash_ins", WQ_UNBOUND, 4);
+    hash_ins_wq = alloc_workqueue("hash_ins", WQ_UNBOUND | WQ_HIGHPRI, 16);
 
-    lbn_ins_wq = alloc_workqueue("lbn_ins", WQ_UNBOUND, 4);
+    lbn_ins_wq = alloc_workqueue("lbn_ins", WQ_UNBOUND, 1);
 
 	dedup_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
 						      sizeof(struct dedup_work));
