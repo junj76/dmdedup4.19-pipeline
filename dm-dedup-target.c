@@ -43,6 +43,8 @@
 #define NOHASH_NOLBN 4
 
 static spinlock_t my_lock;
+static spinlock_t dc_kvs_lock;
+static spinlock_t dc_mdops_lock;
 
 struct on_disk_stats {
 	u64 physical_block_counter;
@@ -82,6 +84,32 @@ struct process_work {
     u8 *hash;
     int result;
     struct hash_pbn_value hashpbn_value;
+    struct lbn_pbn_value lbnpbn_value;
+};
+
+struct inc_work {
+    struct work_struct worker;
+    struct dedup_config *dc;
+    u64 pbn
+};
+
+struct dec_work {
+    struct work_struct worker;
+    struct dedup_config *dc;
+    u64 pbn;
+};
+
+struct hash_ins_work {
+    struct work_struct worker;
+    struct dedup_config *dc;
+    void *hash;
+    struct hash_pbn_value hash_pbn_value;
+};
+
+struct lbn_ins_work {
+    struct work_struct worker;
+    struct dedup_config *dc;
+    uint64_t lbn;
     struct lbn_pbn_value lbnpbn_value;
 };
 
@@ -260,6 +288,91 @@ static int alloc_pbnblk_and_insert_lbn_pbn(struct dedup_config *dc,
 	return r;
 }
 
+static void do_lbn_ins(struct work_struct *ws) {
+    struct lbn_ins_work *lbn_ins_work = container_of(ws, struct lbn_ins_work, worker);
+    struct dedup_config *dc = (struct dedup_config *)lbn_ins_work->dc;
+    uint64_t lbn = (uint64_t)lbn_ins_work->lbn;
+    struct lbn_pbn_value lbnpbn_value = (struct lbn_pbn_value)lbn_ins_work->lbnpbn_value;
+    mempool_free(lbn_ins_work, dc->lbn_ins_work_pool);
+    dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
+                        sizeof(lbn), (void *)&lbnpbn_value,
+                        sizeof(lbnpbn_value));
+    return 0;
+}
+
+static void lbn_ins(struct dedup_config *dc, uint64_t lbn, struct lbn_pbn_value lbnpbn_value) {
+    struct lbn_ins_work *lbn_ins_work;
+    lbn_ins_work = mempool_alloc(dc->lbn_ins_work_pool, GFP_NOIO);
+    lbn_ins_work->dc = dc;
+    lbn_ins_work->lbn = lbn;
+    lbn_ins_work->lbnpbn_value = lbnpbn_value;
+    INIT_WORK(&(lbn_ins_work->worker), do_lbn_ins);
+    queue_work(dc->lbn_ins_workqueue, &(lbn_ins_work->worker));
+}
+
+static void do_hash_ins(struct work_struct *ws) {
+    struct hash_ins_work *hash_ins_work = container_of(ws, struct hash_ins_work, worker);
+    struct dedup_config *dc = (struct dedup_config *)hash_ins_work->dc;
+    struct hash_pbn_value hash_pbn_value = (struct hash_pbn_value)hash_ins_work->hash_pbn_value;
+    void* hash = (void*)hash_ins_work->hash;
+    mempool_free(hash_ins_work, dc->hash_ins_work_pool);
+    dc->kvs_hash_pbn->kvs_insert(dc->kvs_hash_pbn, (void *)hash,
+                        dc->crypto_key_size,
+                        (void *)&hash_pbn_value,
+                        sizeof(hash_pbn_value));
+    return;
+}
+
+static void hash_ins(struct dedup_config *dc, void *hash, struct hash_pbn_value hash_pbn_value) {
+    struct hash_ins_work *hash_ins_work;
+    hash_ins_work = mempool_alloc(dc->hash_ins_work_pool, GFP_NOIO);
+    hash_ins_work->dc = dc;
+    hash_ins_work->hash = hash;
+    hash_ins_work->hash_pbn_value = hash_pbn_value;
+    INIT_WORK(&(hash_ins_work->worker), do_hash_ins);
+    queue_work(dc->hash_ins_workqueue, &(hash_ins_work->worker));
+}
+
+static void do_dec_ref(struct work_struct *ws) {
+    struct dec_work *dec_work = container_of(ws, struct dec_work, worker);
+    u64 pbn = (u64)dec_work->pbn;
+    struct dedup_config *dc = (struct dedup_config *)dec_work->dc;
+    mempool_free(dec_work, dc->dec_work_pool);
+    dc->mdops->dec_refcount(dc->bmd, pbn);
+}
+
+static void dec_ref(struct dedup_config *dc, u64 pbn) {
+    struct dec_work *dec_work;
+    dec_work = mempool_alloc(dc->inc_work_pool, GFP_NOIO);
+    if (!dec_work) {
+        return;
+    }
+    dec_work->dc = dc;
+    dec_work->pbn = pbn;
+    INIT_WORK(&(dec_work->worker), do_dec_ref);
+    queue_work(dc->dec_workqueue, &(dec_work->worker));
+}
+
+static void do_inc_ref(struct work_struct *ws) {
+    struct inc_work *inc_work = container_of(ws, struct inc_work, worker);
+    u64 pbn = (u64)inc_work->pbn;
+    struct dedup_config *dc = (struct dedup_config *)inc_work->dc;
+    mempool_free(inc_work, dc->inc_work_pool);
+    /* dc->mdops->inc_refcount(dc->bmd, pbn); */
+}
+
+static void inc_ref(struct dedup_config *dc, u64 pbn) {
+    struct inc_work *inc_work;
+    inc_work = mempool_alloc(dc->inc_work_pool, GFP_NOIO);
+    if (!inc_work) {
+        return;
+    }
+    inc_work->dc = dc;
+    inc_work->pbn = pbn;
+    INIT_WORK(&(inc_work->worker), do_inc_ref);
+    queue_work(dc->inc_workqueue, &(inc_work->worker));
+}
+
 /*
  * Internal function to handle write when lbn-pbn entry is not
  * present. It creates a new lbn-pbn mapping and insert given
@@ -276,47 +389,19 @@ static int __handle_no_lbn_pbn(struct dedup_config *dc,
 	u64 pbn_new;
 	struct hash_pbn_value hashpbn_value;
 
-	/* Create a new lbn-pbn mapping for given lbn */
-	r = alloc_pbnblk_and_insert_lbn_pbn(dc, &pbn_new, bio, lbn);
-	if (r < 0)
-		goto out;
+	alloc_pbnblk_and_insert_lbn_pbn(dc, &pbn_new, bio, lbn);
 
-	/* Inserts new hash-pbn mapping for given hash. */
 	hashpbn_value.pbn = pbn_new;
-	r = dc->kvs_hash_pbn->kvs_insert(dc->kvs_hash_pbn, (void *)hash,
-					 dc->crypto_key_size,
-					 (void *)&hashpbn_value,
-					 sizeof(hashpbn_value));
-	if (r < 0)
-		goto kvs_insert_err;
 
-	/* Increments refcount for new pbn entry created. */
-	r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
-	if (r < 0)
-		goto inc_refcount_err;
+    hash_ins(dc, hash, hashpbn_value);
 
-	/* On all successful steps increment new write count. */
+    inc_ref(dc, pbn_new);
+
 	dc->newwrites++;
 	goto out;
 
-/* Error handling code path */
-inc_refcount_err:
-	/* Undo actions taken in hash-pbn kvs insert. */
-	ret = dc->kvs_hash_pbn->kvs_delete(dc->kvs_hash_pbn,
-					   (void *)hash, dc->crypto_key_size);
-	if (ret < 0)
-		DMERR("Error in deleting previously created hash pbn entry.");
-kvs_insert_err:
-	/* Undo actions taken in alloc_pbnblk_and_insert_lbn_pbn. */
-	ret = dc->kvs_lbn_pbn->kvs_delete(dc->kvs_lbn_pbn,
-					  (void *)&lbn, sizeof(lbn));
-	if (ret < 0)
-		DMERR("Error in deleting previously created lbn pbn entry.");
-	ret = dc->mdops->dec_refcount(dc->bmd, pbn_new);
-	if (ret < 0)
-		DMERR("ERROR in decrementing previously incremented refcount.");
 out:
-	return r;
+	return 0;
 }
 
 /*
@@ -336,59 +421,20 @@ static int __handle_has_lbn_pbn(struct dedup_config *dc,
 	u64 pbn_new;
 	struct hash_pbn_value hashpbn_value;
 
-	/* Allocates a new block for new pbn and inserts lbn-pbn lapping. */
-	r = alloc_pbnblk_and_insert_lbn_pbn(dc, &pbn_new, bio, lbn);
-	if (r < 0)
-		goto out;
+    unsigned long flags;
 
-	/* Inserts new hash-pbn entry for given hash. */
+	alloc_pbnblk_and_insert_lbn_pbn(dc, &pbn_new, bio, lbn);
+
 	hashpbn_value.pbn = pbn_new;
-	r = dc->kvs_hash_pbn->kvs_insert(dc->kvs_hash_pbn, (void *)hash,
-					 dc->crypto_key_size,
-					 (void *)&hashpbn_value,
-					 sizeof(hashpbn_value));
-	if (r < 0)
-		goto kvs_insert_err;
 
-	/* Increments refcount of new pbn. */
-	r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
-	if (r < 0)
-		goto inc_refcount_err;
+    hash_ins(dc, hash, hashpbn_value);
 
-	/* Decrements refcount for old pbn and decrement logical block cnt. */
-	r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
-	if (r < 0)
-		goto dec_refcount_err;
+    inc_ref(dc, pbn_new);
+
+    dec_ref(dc, pbn_old);
+
 	dc->logical_block_counter--;
-
-	/* On all successful steps increment overwrite count. */
 	dc->overwrites++;
-	goto out;
-
-/* Error handling code path. */
-dec_refcount_err:
-	/* Undo actions taken while incrementing refcount of new pbn. */
-	ret = dc->mdops->dec_refcount(dc->bmd, pbn_new);
-	if (ret < 0)
-		DMERR("Error in decrementing previously incremented refcount.");
-
-inc_refcount_err:
-	ret = dc->kvs_hash_pbn->kvs_delete(dc->kvs_hash_pbn, (void *)hash,
-					   dc->crypto_key_size);
-	if (ret < 0)
-		DMERR("Error in deleting previously inserted hash pbn entry");
-
-kvs_insert_err:
-	/* Undo actions taken in alloc_pbnblk_and_insert_lbn_pbn. */
-	ret = dc->kvs_lbn_pbn->kvs_delete(dc->kvs_lbn_pbn, (void *)&lbn,
-					  sizeof(lbn));
-	if (ret < 0)
-		DMERR("Error in deleting previously created lbn pbn entry");
-
-	ret = dc->mdops->dec_refcount(dc->bmd, pbn_new);
-	if (ret < 0)
-		DMERR("ERROR in decrementing previously incremented refcount.");
-out:
 	return r;
 }
 
@@ -434,33 +480,19 @@ static int __handle_no_lbn_pbn_with_hash(struct dedup_config *dc,
 {
 	int r = 0, ret;
 
-	/* Increments refcount of this passed pbn */
-	r = dc->mdops->inc_refcount(dc->bmd, pbn_this);
-	if (r < 0)
-		goto out;
+    inc_ref(dc, pbn_this);
 
 	lbnpbn_value.pbn = pbn_this;
 
-	/* Insert lbn->pbn_this entry */
 	r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
 					sizeof(lbn), (void *)&lbnpbn_value,
 					sizeof(lbnpbn_value));
-	if (r < 0)
-		goto kvs_insert_error;
 
 	dc->logical_block_counter++;
 
 	bio->bi_status = BLK_STS_OK;
 	bio_endio(bio);
 	dc->newwrites++;
-	goto out;
-
-kvs_insert_error:
-	/* Undo actions taken while incrementing refcount of this pbn. */
-	ret = dc->mdops->dec_refcount(dc->bmd, pbn_this);
-	if (ret < 0)
-		DMERR("Error in decrementing previously incremented refcount.");
-out:
 	return r;
 }
 
@@ -482,14 +514,10 @@ static int __handle_has_lbn_pbn_with_hash(struct dedup_config *dc,
 
 	pbn_old = lbnpbn_value.pbn;
 
-	/* special case, overwrite same LBN/PBN with same data */
 	if (pbn_this == pbn_old)
 		goto out;
 
-	/* Increments refcount of this passed pbn */
-	r = dc->mdops->inc_refcount(dc->bmd, pbn_this);
-	if (r < 0)
-		goto out;
+    inc_ref(dc, pbn_this);
 
 	this_lbnpbn_value.pbn = pbn_this;
 
@@ -499,36 +527,13 @@ static int __handle_has_lbn_pbn_with_hash(struct dedup_config *dc,
 					(void *)&this_lbnpbn_value,
 					sizeof(this_lbnpbn_value));
 	if (r < 0)
-		goto kvs_insert_err;
-
-	/* Decrement refcount of old pbn */
-	r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
-	if (r < 0)
-		goto dec_refcount_err;
+        dec_ref(dc, pbn_old);
 
 	goto out;	/* all OK */
-
-dec_refcount_err:
-	/* Undo actions taken while decrementing refcount of old pbn */
-	/* Overwrite lbn->pbn_this entry with lbn->pbn_old entry */
-	ret = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-				    	  sizeof(lbn), (void *)&lbnpbn_value,
-					  sizeof(lbnpbn_value));
-	if (ret < 0)
-		DMERR("Error in overwriting lbn->pbn_this [%llu] with"
-		      " lbn-pbn_old entry [%llu].", this_lbnpbn_value.pbn,
-		      lbnpbn_value.pbn);
-
-kvs_insert_err:
-	ret = dc->mdops->dec_refcount(dc->bmd, pbn_this);
-	if (ret < 0)
-		DMERR("Error in decrementing previously incremented refcount.");
 out:
-	if (r == 0) {
-		bio->bi_status = BLK_STS_OK;
-		bio_endio(bio);
-		dc->overwrites++;
-	}
+    bio->bi_status = BLK_STS_OK;
+    bio_endio(bio);
+    dc->overwrites++;
 
 	return r;
 }
@@ -586,32 +591,33 @@ static void do_process_work(struct work_struct *ws) {
         __handle_has_lbn_pbn_with_hash(dc, bio, 
                                     bio_lbn(dc, bio), 
                                     hashpbn_value.pbn,
-						            lbnpbn_value);
+                            lbnpbn_value);
         dc->dupwrites++;
-		break;
-    case HASH_NOLBN:
-        __handle_no_lbn_pbn_with_hash(dc, bio,
-                                    bio_lbn(dc, bio), 
-                                    hashpbn_value.pbn,
-						            lbnpbn_value);
-		break;
-    case NOHASH_LBN:
-		__handle_has_lbn_pbn(dc, bio,
-                            bio_lbn(dc, bio), 
-                            hash, 
-                            lbnpbn_value.pbn);
-        dc->dupwrites++;
-		break;
-    case NOHASH_NOLBN:
-        __handle_no_lbn_pbn(dc, bio,
-                            bio_lbn(dc, bio), 
-                            hash);
-		break;
-    }
+    break;
+        case HASH_NOLBN:
+            __handle_no_lbn_pbn_with_hash(dc, bio,
+                                        bio_lbn(dc, bio), 
+                                        hashpbn_value.pbn,
+                                lbnpbn_value);
+    break;
+        case NOHASH_LBN:
+    __handle_has_lbn_pbn(dc, bio,
+                                bio_lbn(dc, bio), 
+                                hash, 
+                                lbnpbn_value.pbn);
+            dc->dupwrites++;
+    break;
+        case NOHASH_NOLBN:
+            __handle_no_lbn_pbn(dc, bio,
+                                bio_lbn(dc, bio), 
+                                hash);
+    break;
+        }
     if (!access_ok(VERIFY_READ, hash, sizeof(u8) * MAX_DIGEST_SIZE))
         return;
     kfree(hash);
 
+    /* spin_unlock_irqrestore(&my_lock, flags); */
 }
 
 static void do_lookup_work(struct work_struct *ws) {
@@ -654,11 +660,11 @@ static void do_lookup_work(struct work_struct *ws) {
         // hash -> pbn found
         if(r2 == -ENODATA) {
             // lbn -> pbn not found
-            result = HASH_LBN;
+            result = HASH_NOLBN;
         }
         else {
             // lbn -> pbn found
-            result = HASH_NOLBN;
+            result = HASH_LBN;
         }
     }
     // enqueue
@@ -692,11 +698,11 @@ static void do_hash_work(struct work_struct *ws) {
     u8 *hash;
     int r;
     hash = kmalloc(sizeof(u8) * MAX_DIGEST_SIZE, GFP_NOIO);
-    if (!hash) {
-        bio->bi_status = BLK_STS_RESOURCE;
-        bio_endio(bio);
-        return;
-    }
+    /* if (!hash) { */
+    /*     bio->bi_status = BLK_STS_RESOURCE; */
+    /*     bio_endio(bio); */
+    /*     return; */
+    /* } */
     r = compute_hash_bio(dc->desc_table, bio, hash);
 
     // enqueue
@@ -1211,6 +1217,10 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
     struct workqueue_struct *hash_wq;
     struct workqueue_struct *lookup_wq;
     struct workqueue_struct *process_wq;
+    struct workqueue_struct *inc_wq;
+    struct workqueue_struct *dec_wq;
+    struct workqueue_struct *hash_ins_wq;
+    struct workqueue_struct *lbn_ins_wq;
 
 	struct init_param_inram iparam_inram;
 	struct init_param_cowbtree iparam_cowbtree;
@@ -1231,6 +1241,10 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
     mempool_t *hash_work_pool = NULL;
     mempool_t *lookup_work_pool = NULL;
     mempool_t *process_work_pool = NULL;
+    mempool_t *inc_work_pool = NULL;
+    mempool_t *dec_work_pool = NULL;
+    mempool_t *hash_ins_work_pool = NULL;
+    mempool_t *lbn_ins_work_pool = NULL;
 
 	bool unformatted;
 
@@ -1263,14 +1277,16 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad_bs;
 	}
 
-    hash_wq = create_singlethread_workqueue("compute-hash");
+    /* hash_wq = create_singlethread_workqueue("compute-hash"); */
+    hash_wq = alloc_workqueue("hash", WQ_UNBOUND, 8);
     if (!hash_wq) {
         ti->error = "fail to create hash workqueue";
         r = -ENOMEM;
         goto bad_bs;
     }
 
-    lookup_wq = create_singlethread_workqueue("lookup table");
+    /* lookup_wq = create_singlethread_workqueue("lookup table"); */
+    lookup_wq = alloc_workqueue("lookup", WQ_UNBOUND, 8);
     if (!lookup_wq) {
         ti->error = "fail to create lookup workqueue";
         r = - ENOMEM;
@@ -1278,13 +1294,33 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
     }
 
     spin_lock_init(&my_lock);
+    spin_lock_init(&dc_kvs_lock);
+    spin_lock_init(&dc_mdops_lock);
     /* process_wq = create_singlethread_workqueue("process"); */
-    process_wq = alloc_workqueue("process", WQ_UNBOUND, 2);
+    process_wq = alloc_workqueue("process", WQ_UNBOUND, 1);
     if (!process_wq) {
         ti->error = "fail to create process workqueue";
         r = -ENOMEM;
         goto bad_bs;
     }
+
+    inc_wq = alloc_workqueue("inc", WQ_UNBOUND, 8);
+    if (!inc_wq) {
+        ti->error = "fail to create inc workqueue";
+        r = -ENOMEM;
+        goto bad_bs;
+    }
+
+    dec_wq = alloc_workqueue("dec", WQ_UNBOUND, 4);
+    if (!dec_wq) {
+        ti->error = "fail to create dec workqueue";
+        r = -ENOMEM;
+        goto bad_bs;
+    }
+
+    hash_ins_wq = alloc_workqueue("hash_ins", WQ_UNBOUND, 4);
+
+    lbn_ins_wq = alloc_workqueue("lbn_ins", WQ_UNBOUND, 4);
 
 	dedup_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
 						      sizeof(struct dedup_work));
@@ -1325,6 +1361,28 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
         r = -ENOMEM;
         goto bad_dedup_mempool;
     }
+
+    inc_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
+                        sizeof(struct inc_work));
+    if (!inc_work_pool) {
+        ti->error = "fail to create inc mempool";
+        r = -ENOMEM;
+        goto bad_dedup_mempool;
+    }
+
+    dec_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
+                        sizeof(struct dec_work));
+    if (!dec_work_pool) {
+        ti->error = "fail to create dec mempool";
+        r = -ENOMEM;
+        goto bad_dedup_mempool;
+    }
+   
+    hash_ins_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
+                        sizeof(struct hash_ins_work));
+
+    lbn_ins_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
+                        sizeof(struct lbn_ins_work));
 
 	dc->io_client = dm_io_client_create();
 	if (IS_ERR(dc->io_client)) {
@@ -1417,11 +1475,19 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
     dc->hash_workqueue = hash_wq;
     dc->lookup_workqueue = lookup_wq;
     dc->process_workqueue = process_wq;
+    dc->inc_workqueue = inc_wq;
+    dc->dec_workqueue = dec_wq;
+    dc->hash_ins_workqueue = hash_ins_wq;
+    dc->lbn_ins_workqueue = lbn_ins_wq;
 	dc->dedup_work_pool = dedup_work_pool;
 	dc->check_work_pool = check_work_pool;
-  dc->hash_work_pool = hash_work_pool;
-  dc->lookup_work_pool = lookup_work_pool;
-  dc->process_work_pool = process_work_pool;
+    dc->hash_work_pool = hash_work_pool;
+    dc->lookup_work_pool = lookup_work_pool;
+    dc->process_work_pool = process_work_pool;
+    dc->inc_work_pool = inc_work_pool;
+    dc->dec_work_pool = dec_work_pool;
+    dc->hash_ins_work_pool = hash_ins_work_pool;
+    dc->lbn_ins_work_pool = lbn_ins_work_pool;
 	dc->bmd = md;
 
 	dc->logical_block_counter = logical_block_counter;

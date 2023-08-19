@@ -65,6 +65,10 @@ struct dedup_config {
     struct workqueue_struct *hash_workqueue;
     struct workqueue_struct *lookup_workqueue;
     struct workqueue_struct *process_workqueue;
+    struct workqueue_struct *inc_workqueue;
+    struct workqueue_struct *dec_workqueue;
+    struct workqueue_struct *hash_ins_workqueue;
+    struct workqueue_struct *lbn_ins_workqueue;
 
     spinlock_t my_lock;
 
@@ -109,6 +113,10 @@ struct dedup_config {
     mempool_t *hash_work_pool;
     mempool_t *lookup_work_pool;
     mempool_t *process_work_pool;
+    mempool_t *inc_work_pool;
+    mempool_t *dec_work_pool;
+    mempool_t *hash_ins_work_pool;
+    mempool_t *lbn_ins_work_pool;
 };
 
 /* Value of the HASH-PBN key-value store */
